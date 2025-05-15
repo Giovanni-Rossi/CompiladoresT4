@@ -1,0 +1,280 @@
+package br.ufscar.dc.compiladores;
+
+import java.util.ArrayList;
+import java.util.List;
+import org.antlr.v4.runtime.Token;
+
+import br.ufscar.dc.compiladores.JanderParser.*;
+import br.ufscar.dc.compiladores.SymbolTable.JanderType;
+
+public class JanderSemanticoUtils {
+    public static List<String> semanticErrors = new ArrayList<>();
+    public static List<String> currentAssignmentVariableNameStack = new ArrayList<>();
+
+    public static void setCurrentAssignmentVariable(String name) {
+        currentAssignmentVariableNameStack.add(name);
+    }
+
+    public static void clearCurrentAssignmentVariableStack() {
+        currentAssignmentVariableNameStack.clear();
+    }
+
+    public static void addSemanticError(Token t, String message) {
+        int line = (t != null) ? t.getLine() : 0; 
+        String linePrefix = (t != null) ? String.format("Linha %d: ", line) : "Error: ";
+        semanticErrors.add(linePrefix + message);
+    }
+
+    /**
+     * Checks if two types are incompatible for assignment or binary operations.
+     * This defines the core type compatibility rules of the Jander language.
+     * @param targetType The type of the left-hand side (for assignment) or first operand.
+     * @param sourceType The type of the right-hand side (for assignment) or second operand.
+     * @return true if types are considered incompatible, false otherwise.
+     */
+    public static boolean areTypesIncompatible(JanderType targetType, JanderType sourceType) {
+        if (targetType == JanderType.INVALID || sourceType == JanderType.INVALID) {
+            return true; 
+        }
+
+        boolean numericTarget = (targetType == JanderType.REAL || targetType == JanderType.INTEGER);
+        boolean numericSource = (sourceType == JanderType.REAL || sourceType == JanderType.INTEGER);
+        if (numericTarget && numericSource) {
+            return false; 
+        }
+
+        if (targetType == JanderType.LITERAL && sourceType == JanderType.LITERAL) {
+            return false;
+        }
+
+        if (targetType == JanderType.LOGICAL && sourceType == JanderType.LOGICAL) {
+            return false;
+        }
+        
+        if (targetType == sourceType) {
+            return false;
+        }
+
+        return true; 
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.Exp_aritmeticaContext ctx) {
+        JanderType resultType = null;
+
+        for (TermoContext termCtx : ctx.termo()) {
+            JanderType currentType = checkType(symbolTable, termCtx);
+            if (resultType == null) {
+                resultType = currentType;
+            } else { 
+                if (currentType != JanderType.INVALID && !areTypesIncompatible(resultType, currentType)) {
+                    String varName = currentAssignmentVariableNameStack.isEmpty() ? "expression" : currentAssignmentVariableNameStack.get(currentAssignmentVariableNameStack.size() - 1);
+                    addSemanticError(ctx.getStart(), "atribuicao nao compativel para " + varName);
+                    return JanderType.INVALID;
+                }
+            } 
+        }
+        return resultType;
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.TermoContext ctx) {
+        JanderType resultType = null;
+
+        for (FatorContext factorCtx : ctx.fator()) {
+            JanderType currentType = checkType(symbolTable, factorCtx);
+            if (resultType == null) {
+                resultType = currentType;
+            } else { 
+                if (currentType != JanderType.INVALID && !areTypesIncompatible(resultType, currentType)) {
+                    addSemanticError(ctx.getStart(), "TermoT " + ctx.getText() + "contém tipos incompatíveis");
+                    return JanderType.INVALID;
+                }
+            }
+        }
+        return resultType;
+    }
+    
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.FatorContext ctx) {
+        JanderType resultType = null;
+
+        for (ParcelaContext factorCtx : ctx.parcela()) {
+            JanderType currentType = checkType(symbolTable, factorCtx);
+            if (resultType == null) {
+                resultType = currentType;
+            } else { 
+                if (currentType != JanderType.INVALID && !areTypesIncompatible(resultType, currentType)) {
+                    addSemanticError(ctx.getStart(), "Fator " + ctx.getText() + "contém tipos incompatíveis");
+                    return JanderType.INVALID;
+                }
+            }
+        }
+        return resultType;
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.ParcelaContext ctx) {
+        JanderType typeOfOperand = JanderType.INVALID;
+        if (ctx.parcela_unario() != null) { 
+            typeOfOperand = checkType(symbolTable, ctx.parcela_unario());
+        } else if (ctx.parcela_nao_unario() != null) {
+            typeOfOperand = checkType(symbolTable, ctx.parcela_nao_unario());
+        }
+
+        if (ctx.op_unario() != null) {
+            String op = ctx.op_unario().getText();
+            if (op.equals("-")) { 
+                if (typeOfOperand != JanderType.INTEGER && typeOfOperand != JanderType.REAL) {
+                    if(typeOfOperand != JanderType.INVALID) { 
+                        addSemanticError(ctx.op_unario().getStart(), "Unary minus operator requires INTEGER or REAL operand, found " + typeOfOperand);
+                    }
+                    return JanderType.INVALID;
+                }
+                return typeOfOperand; 
+            }
+        }
+        return typeOfOperand;
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.Parcela_unarioContext ctx) {
+        if (ctx.identificador() != null) {
+            String simpleName = ctx.identificador().IDENT(0).getText(); 
+            if (!symbolTable.containsSymbol(simpleName)) {
+                addSemanticError(ctx.identificador().getStart(), "Identifier '" + simpleName + "' not declared.");
+                return JanderType.INVALID;
+            } 
+            return symbolTable.getSymbolType(simpleName); 
+        } else if (ctx.NUM_INT() != null) {
+            return JanderType.INTEGER;
+        } else if (ctx.NUM_REAL() != null) {
+            return JanderType.REAL;
+        } else if (ctx.IDENT() != null && ctx.ABREPAR() != null) { 
+            String funcName = ctx.IDENT().getText();
+            if (!symbolTable.containsSymbol(funcName)) {
+                addSemanticError(ctx.IDENT().getSymbol(), "Function '" + funcName + "' not declared.");
+                return JanderType.INVALID;
+            } 
+            return symbolTable.getSymbolType(funcName); 
+        } else if (ctx.ABREPAR() != null && ctx.expressao() != null && !ctx.expressao().isEmpty()) { 
+             return checkType(symbolTable, ctx.expressao(0)); 
+        }
+        return JanderType.INVALID;
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.Parcela_nao_unarioContext ctx) {
+        if (ctx.identificador() != null) { 
+            String simpleName = ctx.identificador().IDENT(0).getText();
+            if (!symbolTable.containsSymbol(simpleName)) {
+                addSemanticError(ctx.identificador().getStart(), "Identifier '" + simpleName + "' not declared for address-of operation.");
+                return JanderType.INVALID;
+            }
+            addSemanticError(ctx.getStart(), "Address-of operator (&) result type not fully supported by current JanderType enum. Needs POINTER type.");
+            return JanderType.INVALID; 
+        } else if (ctx.CADEIA() != null) {
+            return JanderType.LITERAL;
+        }
+        return JanderType.INVALID;
+    }
+    
+    public static JanderType checkTypeByName(SymbolTable symbolTable, Token nameToken, String name) {
+        if (!symbolTable.containsSymbol(name)) {
+            addSemanticError(nameToken, "Identifier '" + name + "' not declared.");
+            return JanderType.INVALID;
+        }
+        return symbolTable.getSymbolType(name);
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.ExpressaoContext ctx) {
+        JanderType resultType = null;
+        if (ctx.termo_logico().isEmpty()) return JanderType.INVALID;
+
+        for (Termo_logicoContext termLogCtx : ctx.termo_logico()) {
+            JanderType currentTermLogType = checkType(symbolTable, termLogCtx);
+            if (resultType == null) {
+                resultType = currentTermLogType;
+            } else { 
+                if (resultType != JanderType.LOGICAL || currentTermLogType != JanderType.LOGICAL) {
+                    if(resultType != JanderType.INVALID && currentTermLogType != JanderType.INVALID){
+                        addSemanticError(ctx.op_logico_1(ctx.termo_logico().indexOf(termLogCtx) -1).getStart(), "'or' operation requires LOGICAL operands, found " + resultType + " and " + currentTermLogType);
+                    }
+                    return JanderType.INVALID;
+                }
+                resultType = JanderType.LOGICAL; 
+            }
+            if (resultType == JanderType.INVALID) break; 
+        }
+        return resultType;
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.Termo_logicoContext ctx) {
+        JanderType resultType = null;
+        if (ctx.fator_logico().isEmpty()) return JanderType.INVALID;
+
+        for (Fator_logicoContext factorLogCtx : ctx.fator_logico()) {
+            JanderType currentFactorLogType = checkType(symbolTable, factorLogCtx);
+            if (resultType == null) {
+                resultType = currentFactorLogType;
+            } else { 
+                if (resultType != JanderType.LOGICAL || currentFactorLogType != JanderType.LOGICAL) {
+                     if(resultType != JanderType.INVALID && currentFactorLogType != JanderType.INVALID){
+                        addSemanticError(ctx.op_logico_2(ctx.fator_logico().indexOf(factorLogCtx) -1).getStart(), "'and' operation requires LOGICAL operands, found " + resultType + " and " + currentFactorLogType);
+                    }
+                    return JanderType.INVALID;
+                }
+                resultType = JanderType.LOGICAL; 
+            }
+            if (resultType == JanderType.INVALID) break; 
+        }
+        return resultType;
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.Fator_logicoContext ctx) {
+        JanderType type = checkType(symbolTable, ctx.parcela_logica());
+        
+        boolean hasNao = ctx.getChildCount() > 1 && ctx.getChild(0).getText().equals("nao"); 
+
+        if (hasNao) { 
+            if (type != JanderType.LOGICAL) {
+                if (type != JanderType.INVALID){ 
+                    Token naoToken = (ctx.getChild(0) instanceof org.antlr.v4.runtime.tree.TerminalNode) ? 
+                                     ((org.antlr.v4.runtime.tree.TerminalNode)ctx.getChild(0)).getSymbol() : null;
+                    addSemanticError(naoToken != null ? naoToken : ctx.getStart(), "'not' operator requires a LOGICAL operand, found " + type);
+                }
+                return JanderType.INVALID; 
+            }
+            return JanderType.LOGICAL; 
+        }
+        return type;
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.Parcela_logicaContext ctx) {
+        if (ctx.exp_relacional() != null) {
+            return checkType(symbolTable, ctx.exp_relacional()); 
+        } else if (ctx.VERDADEIRO() != null || ctx.FALSO() != null) {
+            return JanderType.LOGICAL;
+        }
+        return JanderType.INVALID;
+    }
+
+    public static JanderType checkType(SymbolTable symbolTable, JanderParser.Exp_relacionalContext ctx) {
+        if (ctx.exp_aritmetica().size() == 1) { 
+            addSemanticError(ctx.getStart(), "Relational expression incomplete; operator or second operand missing.");
+            return JanderType.INVALID; 
+        } else if (ctx.exp_aritmetica().size() == 2 && ctx.op_relacional() != null) {
+            JanderType typeLeft = checkType(symbolTable, ctx.exp_aritmetica(0));
+            JanderType typeRight = checkType(symbolTable, ctx.exp_aritmetica(1));
+
+            if (typeLeft == JanderType.INVALID || typeRight == JanderType.INVALID) {
+            } else if (typeLeft == JanderType.LOGICAL || typeRight == JanderType.LOGICAL) {
+                addSemanticError(ctx.op_relacional().getStart(), "Cannot use LOGICAL type in relational comparison.");
+            } else if (typeLeft == JanderType.LITERAL && typeRight != JanderType.LITERAL) {
+                addSemanticError(ctx.op_relacional().getStart(), "Cannot compare LITERAL with " + typeRight + " in relational operation.");
+            } else if (typeRight == JanderType.LITERAL && typeLeft != JanderType.LITERAL) {
+                addSemanticError(ctx.op_relacional().getStart(), "Cannot compare " + typeLeft + " with LITERAL in relational operation.");
+            } else if ( (typeLeft == JanderType.INTEGER || typeLeft == JanderType.REAL) && 
+                        (typeRight == JanderType.INTEGER || typeRight == JanderType.REAL) ) {
+            } else if (typeLeft != typeRight) { 
+                 addSemanticError(ctx.op_relacional().getStart(), "Incompatible types for relational operation: " + typeLeft + " and " + typeRight);
+            }
+            return JanderType.LOGICAL; 
+        }
+        return JanderType.INVALID; 
+    }
+} 
