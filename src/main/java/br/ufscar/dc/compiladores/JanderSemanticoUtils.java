@@ -6,6 +6,7 @@ import org.antlr.v4.runtime.Token;
 
 import br.ufscar.dc.compiladores.JanderParser.*;
 import br.ufscar.dc.compiladores.SymbolTable.JanderType;
+import java.util.stream.IntStream;
 
 public class JanderSemanticoUtils {
     // Lista para armazenar erros semânticos encontrados durante a análise.
@@ -379,5 +380,33 @@ public class JanderSemanticoUtils {
         }
         // Padrão para inválido se a estrutura não corresponder aos padrões conhecidos.
         return JanderType.INVALID;
+    }
+
+    public static void validateCallArguments(
+            Token tCall, String funcName,
+            List<JanderParser.ExpressaoContext> args,
+            SymbolTable symbolTable) {
+
+        // obtém a lista de tipos de parâmetros esperados (deve ter sido guardado na SymbolTable)
+        List<JanderType> expected = symbolTable.getParamTypes(funcName);
+
+        // 1) verificar número de argumentos
+        if (expected.size() != args.size()) {
+            addSemanticError(tCall,
+                String.format("Chamada %s: número de argumentos incompatível (esperado %d, encontrado %d)",
+                              funcName, expected.size(), args.size()));
+            return;
+        }
+
+        // 2) verificar tipo de cada argumento
+        IntStream.range(0, expected.size()).forEach(i -> {
+            JanderType given = checkType(symbolTable, args.get(i));
+            JanderType want  = expected.get(i);
+            if (areTypesIncompatible(want, given)) {
+                addSemanticError(args.get(i).getStart(),
+                    String.format("Chamada %s: tipo do argumento %d incompatível (esperado %s, encontrado %s)",
+                                  funcName, i+1, want, given));
+            }
+        });
     }
 }

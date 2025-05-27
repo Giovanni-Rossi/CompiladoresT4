@@ -10,6 +10,8 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
     private SymbolTable symbolTable; // Tabela de símbolos para armazenar identificadores declarados e seus tipos.
     private PrintWriter pw; // PrintWriter para imprimir erros semânticos.
 
+    private boolean dentroDeFuncao = false;
+
     // Construtor inicializa a tabela de símbolos, PrintWriter e limpa quaisquer erros semânticos anteriores.
     public JanderSemantico(PrintWriter pw) {
         this.symbolTable = new SymbolTable();
@@ -28,6 +30,8 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
             pw.println(error);
         }
         pw.println("Fim da compilacao"); // Mensagem de fim da compilação.
+        symbolTable.closeScope();
+
     }
 
     // Chamado ao visitar a estrutura principal do programa.
@@ -37,6 +41,7 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
         symbolTable = new SymbolTable(); // Cria uma nova tabela de símbolos para o programa.
         JanderSemanticoUtils.semanticErrors.clear(); // Limpa quaisquer erros semânticos existentes.
         JanderSemanticoUtils.clearCurrentAssignmentVariableStack(); // Limpa a pilha de atribuição.
+        symbolTable.openScope();
         return super.visitPrograma(ctx); // Continua visitando os nós filhos.
     }
 
@@ -44,11 +49,19 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
     // Delega para o visitor da declaração específica.
     @Override
     public Void visitDecl_local_global(Decl_local_globalContext ctx) {
-        if (ctx.declaracao_local() != null) {
-            visitDeclaracao_local(ctx.declaracao_local()); // Visita declaração local.
-        } else if (ctx.declaracao_global() != null) {
-            visitDeclaracao_global(ctx.declaracao_global()); // Visita declaração global.
+        if (ctx.declaracao_global() != null) {
+        // abre novo escopo para procedimento/função
+        symbolTable.openScope();
+        boolean anterior = dentroDeFuncao;
+        if (ctx.declaracao_global().FUNCAO() != null) {
+            dentroDeFuncao = true;
         }
+        visitDeclaracao_global(ctx.declaracao_global());
+        dentroDeFuncao = anterior;
+        symbolTable.closeScope();
+    } else if (ctx.declaracao_local() != null) {
+        visitDeclaracao_local(ctx.declaracao_local());
+    }
         return null; // Nenhuma ação específica aqui, tratada pelos visitors filhos.
     }
 
@@ -89,7 +102,7 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
             }
 
             // Verifica redeclaração da constante.
-            if (symbolTable.containsSymbol(constName)) {
+            if (symbolTable.containsInCurrentScope(constName)) {
                 JanderSemanticoUtils.addSemanticError(ctx.IDENT().getSymbol(), "Variável " + constName + " já existe"); // A mensagem deveria ser "Constante ... já existe"
             } else {
                 symbolTable.addSymbol(constName, constType); // Adiciona constante à tabela de símbolos.
@@ -136,7 +149,7 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
             Token varNameToken = identCtx.start; // Obtém token para relatório de erros.
 
             // Verifica redeclaração.
-            if (symbolTable.containsSymbol(varName)) {
+            if (symbolTable.containsInCurrentScope(varName)) {
                 JanderSemanticoUtils.addSemanticError(varNameToken, "identificador " + varName + " ja declarado anteriormente");
             } else {
                 symbolTable.addSymbol(varName, varJanderType); // Adiciona variável à tabela de símbolos.
@@ -202,7 +215,29 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
         }
         return super.visitCmdLeia(ctx); // Continua visitando filhos, se houver.
     }
+    @Override
+    public Void visitCmdChamada(CmdChamadaContext ctx) {
+        String nome = ctx.IDENT().getText();
+        Token t = ctx.IDENT().getSymbol();
+        if (!symbolTable.containsSymbol(nome)) {
+            JanderSemanticoUtils.addSemanticError(t,
+                "identificador " + nome + " nao declarado");
+        } else {
+            JanderSemanticoUtils.validateCallArguments(
+                t, nome, ctx.expressao(), symbolTable);
+        }
+        return super.visitCmdChamada(ctx);
+    }
 
+    @Override
+    public Void visitCmdRetorne(CmdRetorneContext ctx) {
+        if (!dentroDeFuncao) {
+            JanderSemanticoUtils.addSemanticError(
+                ctx.RETORNE().getSymbol(),
+                "comando retorne fora do escopo de função");
+        }
+        return super.visitCmdRetorne(ctx);
+    }
     // Chamado ao visitar uma parcela não unária (ex: literal string ou &identificador).
     @Override
     public Void visitParcela_nao_unario(Parcela_nao_unarioContext ctx) {
