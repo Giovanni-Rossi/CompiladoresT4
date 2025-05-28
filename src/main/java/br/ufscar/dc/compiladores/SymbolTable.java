@@ -14,6 +14,7 @@ public class SymbolTable {
         INTEGER,
         REAL,
         LOGICAL,
+        POINTER,
         INVALID
     }
 

@@ -33,6 +33,9 @@ public class JanderSemanticoUtils {
 
     // Verifica se dois tipos Jander são incompatíveis.
     public static boolean areTypesIncompatible(JanderType targetType, JanderType sourceType) {
+        if (targetType == JanderType.POINTER || sourceType == JanderType.POINTER) {
+            return targetType != JanderType.POINTER || sourceType != JanderType.POINTER;
+        }
         // Se qualquer um dos tipos for inválido, eles são considerados incompatíveis.
         if (targetType == JanderType.INVALID || sourceType == JanderType.INVALID) {
             return true;

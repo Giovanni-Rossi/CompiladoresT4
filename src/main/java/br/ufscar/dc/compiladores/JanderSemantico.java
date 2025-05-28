@@ -2,6 +2,7 @@ package br.ufscar.dc.compiladores;
 
 import br.ufscar.dc.compiladores.JanderParser.*;
 import br.ufscar.dc.compiladores.SymbolTable.JanderType;
+import br.ufscar.dc.compiladores.SymbolTable;
 import org.antlr.v4.runtime.Token;
 
 import java.io.PrintWriter;
@@ -30,7 +31,7 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
             pw.println(error);
         }
         pw.println("Fim da compilacao"); // Mensagem de fim da compilação.
-        symbolTable.closeScope();
+        //symbolTable.closeScope();
 
     }
 
@@ -42,7 +43,9 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
         JanderSemanticoUtils.semanticErrors.clear(); // Limpa quaisquer erros semânticos existentes.
         JanderSemanticoUtils.clearCurrentAssignmentVariableStack(); // Limpa a pilha de atribuição.
         symbolTable.openScope();
-        return super.visitPrograma(ctx); // Continua visitando os nós filhos.
+        super.visitPrograma(ctx);
+        symbolTable.closeScope();
+        return null; // Continua visitando os nós filhos.
     }
 
     // Chamado ao visitar uma declaração local ou global.
@@ -56,11 +59,11 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
         if (ctx.declaracao_global().FUNCAO() != null) {
             dentroDeFuncao = true;
         }
-        visitDeclaracao_global(ctx.declaracao_global());
+        super.visitDeclaracao_global(ctx.declaracao_global());
         dentroDeFuncao = anterior;
         symbolTable.closeScope();
     } else if (ctx.declaracao_local() != null) {
-        visitDeclaracao_local(ctx.declaracao_local());
+        super.visitDeclaracao_local(ctx.declaracao_local());
     }
         return null; // Nenhuma ação específica aqui, tratada pelos visitors filhos.
     }
@@ -116,54 +119,47 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
     // Chamado ao visitar uma declaração de variável.
     @Override
     public Void visitVariavel(VariavelContext ctx) {
-        String typeString = ctx.tipo().getText(); // Obtém a string de tipo (ex: "inteiro", "real").
-        JanderType varJanderType = JanderType.INVALID; // Padrão para tipo inválido.
 
-        // Determina o JanderType a partir da string de tipo da regra `tipo`.
-        // Isso assume que `tipo` fornece diretamente "inteiro", "real", etc.
-        // Se `tipo` puder ser mais complexo (ex: tipos customizados, ponteiros), isso precisa de expansão.
+        /* -------- 1. Descobre o tipo declarado -------- */
+        String rawType = ctx.tipo().getText();      // pode vir "^inteiro", "real"…
+        boolean isPointer = rawType.startsWith("^");
+        String typeString = isPointer ? rawType.substring(1) : rawType;   // remove '^' se existir
+
+        SymbolTable.JanderType baseType;
         switch (typeString.toLowerCase()) {
-            case "inteiro":
-                varJanderType = JanderType.INTEGER;
-                break;
-            case "real":
-                varJanderType = JanderType.REAL;
-                break;
-            case "literal":
-                varJanderType = JanderType.LITERAL;
-                break;
-            case "logico":
-                varJanderType = JanderType.LOGICAL;
-                break;
-            default:
-                // Se a string de tipo de ctx.tipo() não corresponder aos tipos básicos,
-                // pode ser um tipo customizado ou um erro.
-                // O erro comentado para "tipo ... desconhecido" sugere isso.
-                // JanderSemanticoUtils.addSemanticError(ctx.tipo().getStart(), "tipo " + typeString + " desconhecido"); // Assumindo que ctx.tipo().getStart() é válido.
-                break;
+            case "inteiro":  baseType = JanderType.INTEGER; break;
+            case "real":     baseType = JanderType.REAL;    break;
+            case "literal":  baseType = JanderType.LITERAL; break;
+            case "logico":   baseType = JanderType.LOGICAL; break;
+            default:         baseType = JanderType.INVALID; break;
         }
 
-        // Processa cada identificador na lista de declaração de variáveis.
-        for (IdentificadorContext identCtx : ctx.identificador()) {
-            String varName = identCtx.getText(); // Obtém nome da variável.
-            Token varNameToken = identCtx.start; // Obtém token para relatório de erros.
+        // Se houver '^', o tipo final é POINTER; caso contrário, o próprio baseType
+        SymbolTable.JanderType finalType = isPointer ? JanderType.POINTER : baseType;
 
-            // Verifica redeclaração.
+        /* -------- 2. Para cada identificador declarado -------- */
+        for (IdentificadorContext identCtx : ctx.identificador()) {
+            String varName = identCtx.getText();
+            Token  varTok  = identCtx.start;
+
+            // redeclaração no mesmo escopo
             if (symbolTable.containsInCurrentScope(varName)) {
-                JanderSemanticoUtils.addSemanticError(varNameToken, "identificador " + varName + " ja declarado anteriormente");
-            } else {
-                symbolTable.addSymbol(varName, varJanderType); // Adiciona variável à tabela de símbolos.
-                // Se varJanderType permaneceu INVALID (ex: "tipo xyz" onde xyz não é básico), reporta erro.
-                if (varJanderType == JanderType.INVALID) {
-                    // Esta mensagem de erro pode ser redundante se a própria string de tipo já foi sinalizada como desconhecida.
-                    // Depende se `tipo` pode ser apenas tipos básicos ou também definidos pelo usuário.
-                    // Se `tipo` pudesse ser `IDENT` (para tipos de usuário), então `typeString` seria esse IDENT.
-                    JanderSemanticoUtils.addSemanticError(varNameToken, "tipo " + typeString + " nao declarado");
-                }
+                JanderSemanticoUtils.addSemanticError(
+                    varTok, "identificador " + varName + " ja declarado anteriormente");
+                continue;
+            }
+
+            symbolTable.addSymbol(varName, finalType);
+
+            // se tipo base é inválido (ex.: "^xyz" ou "xyz")
+            if (baseType == JanderType.INVALID) {
+                JanderSemanticoUtils.addSemanticError(
+                    varTok, "tipo " + typeString + " nao declarado");
             }
         }
-        return super.visitVariavel(ctx); // Continua visitando filhos, se houver.
+        return super.visitVariavel(ctx);
     }
+
 
     // Chamado ao visitar um comando de atribuição (ex: variavel = expressao).
     @Override
@@ -171,6 +167,8 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
         String varName = ctx.identificador().getText(); // Nome da variável que está recebendo a atribuição.
         Token varNameToken = ctx.identificador().start; // Token para o nome da variável.
 
+        boolean temCircunflexo = ctx.getChild(0).getText().equals("^");
+        String alvo = (temCircunflexo ? "^" : "") + varName;
         // Define a variável de atribuição atual para mensagens de erro contextuais de dentro da expressão.
         JanderSemanticoUtils.setCurrentAssignmentVariable(varName);
         // Verifica o tipo da expressão do lado direito.
@@ -190,7 +188,7 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
             // 1. expressionType for JanderType.INVALID (erro dentro da própria expressão), OU
             // 2. varType e expressionType forem tipos válidos, mas incompatíveis para atribuição.
             if (JanderSemanticoUtils.areTypesIncompatible(varType, expressionType)) {
-                JanderSemanticoUtils.addSemanticError(varNameToken, "atribuicao nao compativel para " + varName);
+                JanderSemanticoUtils.addSemanticError(varNameToken, "atribuicao nao compativel para " + alvo);
             }
         }
         // Chamar super.visitCmdAtribuicao(ctx) pode ser redundante se JanderSemanticoUtils.checkType

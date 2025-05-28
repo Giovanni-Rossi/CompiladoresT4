@@ -15,7 +15,7 @@ public class Main {
             CharStream cs = CharStreams.fromFileName(args[0]);
             JanderLexer lex = new JanderLexer(cs);
             String arquivoSaida = args[1];
-            PrintWriter pw = new PrintWriter(arquivoSaida);
+            PrintWriter pw = new PrintWriter(arquivoSaida, "UTF-8");
 
             CommonTokenStream tokens = new CommonTokenStream(lex);
             JanderParser parser = new JanderParser(tokens);
@@ -26,15 +26,18 @@ public class Main {
 
             ProgramaContext arvore = parser.programa();
             JanderSemantico semantico = new JanderSemantico(pw);
-            semantico.visitPrograma(arvore);
+            
+            semantico.visit(arvore);
 
-            if (semantico.hasErrors()) {
-                semantico.printErrors();
-            }
+            //if (semantico.hasErrors()) {
+            semantico.printErrors();
+            pw.flush();
+            //}
 
             pw.close();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.exit(1);
         }
     }
 }
