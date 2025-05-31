@@ -6,12 +6,171 @@ import br.ufscar.dc.compiladores.SymbolTable;
 import org.antlr.v4.runtime.Token;
 
 import java.io.PrintWriter;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class JanderSemantico extends JanderBaseVisitor<Void> {
     private SymbolTable symbolTable; // Tabela de símbolos para armazenar identificadores declarados e seus tipos.
     private PrintWriter pw; // PrintWriter para imprimir erros semânticos.
 
     private boolean dentroDeFuncao = false;
+
+    private SymbolTable.JanderType resolveIdentificadorType(
+            IdentificadorContext identCtx,
+            SymbolTable symbolTable, // Pode ser this.symbolTable se o método estiver em JanderSemantico
+            StringBuilder outFullAccessPath) {
+
+        outFullAccessPath.setLength(0); // Limpa o StringBuilder
+        List<org.antlr.v4.runtime.tree.TerminalNode> idParts = identCtx.IDENT(); // IDENT ('.' IDENT)* dimensao
+
+        if (idParts.isEmpty()) {
+            JanderSemanticoUtils.addSemanticError(identCtx.start, "Identificador inválido.");
+            return SymbolTable.JanderType.INVALID;
+        }
+
+        String baseVarName = idParts.get(0).getText();
+        Token baseVarToken = idParts.get(0).getSymbol();
+        outFullAccessPath.append(baseVarName);
+
+        if (!symbolTable.containsSymbol(baseVarName)) {
+            JanderSemanticoUtils.addSemanticError(baseVarToken, "identificador " + baseVarName + " não declarado"); //
+            return SymbolTable.JanderType.INVALID;
+        }
+
+        SymbolTable.JanderType currentResolvedType = symbolTable.getSymbolType(baseVarName); //
+
+        // Lida com acesso a campos de registro (ex: ponto1.x)
+        for (int i = 1; i < idParts.size(); i++) {
+            String fieldName = idParts.get(i).getText();
+            Token fieldToken = idParts.get(i).getSymbol();
+            String currentRecordPath = outFullAccessPath.toString(); // Caminho do registro antes de acessar este campo
+            outFullAccessPath.append(".").append(fieldName);
+
+            if (currentResolvedType != SymbolTable.JanderType.RECORD) { //
+                JanderSemanticoUtils.addSemanticError(idParts.get(i - 1).getSymbol(), "identificador " + currentRecordPath + " nao eh um registro para acessar o campo '" + fieldName + "'.");
+                return SymbolTable.JanderType.INVALID;
+            }
+            
+            // Para obter os campos, precisamos do nome da variável que É o registro.
+            // Para 'ponto1.x', é 'ponto1'.
+            // Se tivéssemos 'reg1.reg2_field.sub_field', para obter os campos de 'reg2_field',
+            // precisaríamos do nome da variável 'reg1' se 'reg2_field' for um campo de 'reg1'.
+            // A SymbolTable.getRecordFields(String name) atual espera o nome da variável declarada como registro.
+            String recordVariableForFieldLookup = idParts.get(0).getText(); // Começa com a variável base.
+            if (i > 1) {
+                // Para acessos mais profundos como var.recordField.subField, esta lógica de lookup pode precisar ser mais sofisticada
+                // dependendo de como os tipos de registro aninhados são armazenados e recuperados.
+                // Para "ponto1.x", i == 1, então este 'if' não é atingido.
+                // Se atingido, indica um cenário mais complexo não totalmente coberto pela SymbolTable.getRecordFields simples.
+                JanderSemanticoUtils.addSemanticError(fieldToken, "Acesso a campos de registros profundamente aninhados (ex: var.regcampo.subcampo) não é diretamente suportado por esta resolução simplificada.");
+                return SymbolTable.JanderType.INVALID;
+            }
+
+            Map<String, SymbolTable.JanderType> fields = symbolTable.getRecordFields(recordVariableForFieldLookup); //
+            if (fields.isEmpty() && currentResolvedType == SymbolTable.JanderType.RECORD) { // Verifica se era um tipo registro, mas não foram encontrados campos
+                JanderSemanticoUtils.addSemanticError(idParts.get(i-1).getSymbol(), "identificador " + currentRecordPath + " é um registro, mas parece não ter campos definidos ou acessíveis.");
+                return SymbolTable.JanderType.INVALID;
+            }
+
+            if (!fields.containsKey(fieldName)) {
+                JanderSemanticoUtils.addSemanticError(fieldToken, "identificador " + currentRecordPath + "." + fieldName + " nao declarado");
+                return SymbolTable.JanderType.INVALID;
+            }
+            currentResolvedType = fields.get(fieldName);
+        }
+
+        // Lida com acesso a dimensões de array (identCtx.dimensao())
+        // A gramática é: identificador: IDENT ('.' IDENT)* dimensao; dimensao : ('[' exp_aritmetica ']')*;
+        if (identCtx.dimensao() != null && !identCtx.dimensao().exp_aritmetica().isEmpty()) {
+            // Se currentResolvedType fosse um tipo array, acessar um elemento resultaria no tipo do elemento.
+            // Se não for um tipo array, é um erro.
+            // Cada exp_aritmetica em dimensao deve ser INTEGER.
+            // Para "ponto1.x", dimensao está vazia.
+            JanderSemanticoUtils.addSemanticError(identCtx.dimensao().start, "Acesso a dimensões de array (ex: var[indice]) não implementado nesta versão.");
+            return SymbolTable.JanderType.INVALID; // Tratar como erro por enquanto.
+        }
+
+        return currentResolvedType;
+    }
+
+    private Map<String, SymbolTable.JanderType> parseRecordStructure(RegistroContext regCtx, String recordTypeNameForContext) {
+        Map<String, SymbolTable.JanderType> recordFields = new HashMap<>();
+
+        for (VariavelContext campoVarCtx : regCtx.variavel()) {
+            TipoContext tipoDoCampoCtx = campoVarCtx.tipo();
+            String nomeDoTipoDoCampoStr = null;
+            boolean campoIsPointer = false;
+
+            if (tipoDoCampoCtx.tipo_estendido() != null) {
+                Tipo_estendidoContext teCtx = tipoDoCampoCtx.tipo_estendido();
+                if (teCtx.getChildCount() > 0 && teCtx.getChild(0).getText().equals("^")) {
+                    campoIsPointer = true;
+                }
+
+                Tipo_basico_identContext tbiCtx = teCtx.tipo_basico_ident();
+                if (tbiCtx.tipo_basico() != null) {
+                    nomeDoTipoDoCampoStr = tbiCtx.tipo_basico().getText();
+                } else if (tbiCtx.IDENT() != null) {
+                    nomeDoTipoDoCampoStr = tbiCtx.IDENT().getText();
+                    // Se este IDENT for outro tipo registro nomeado, precisamos verificar se ele existe.
+                    // Por ora, a SymbolTable armazena apenas o JanderType.RECORD para o campo.
+                    // Uma implementação mais avançada poderia armazenar a referência ao tipo nomeado.
+                    if (!symbolTable.containsSymbol(nomeDoTipoDoCampoStr) || symbolTable.getSymbolType(nomeDoTipoDoCampoStr) != JanderType.RECORD) {
+                        // Verifica se é um tipo básico conhecido caso não seja um registro conhecido
+                        boolean isBasic = nomeDoTipoDoCampoStr.matches("(?i)inteiro|real|literal|logico");
+                        if(!isBasic && (!symbolTable.containsSymbol(nomeDoTipoDoCampoStr) || symbolTable.getSymbolType(nomeDoTipoDoCampoStr) != JanderType.RECORD)){
+                            JanderSemanticoUtils.addSemanticError(tbiCtx.IDENT().getSymbol(), "Tipo '" + nomeDoTipoDoCampoStr + "' usado em campo do registro '" + recordTypeNameForContext + "' não é um tipo de registro declarado nem um tipo básico.");
+                        }
+                    }
+                } else {
+                    JanderSemanticoUtils.addSemanticError(tbiCtx.start, "Tipo básico ou identificador de tipo esperado para campo do registro '" + recordTypeNameForContext + "'.");
+                    continue; 
+                }
+            } else if (tipoDoCampoCtx.registro() != null) {
+                JanderSemanticoUtils.addSemanticError(tipoDoCampoCtx.start, "Campos de registro aninhados anonimamente (registro dentro de registro) não são suportados diretamente na definição do tipo '" + recordTypeNameForContext + "'.");
+                continue; 
+            } else {
+                JanderSemanticoUtils.addSemanticError(tipoDoCampoCtx.start, "Tipo de campo desconhecido ou malformado no registro '" + recordTypeNameForContext + "'.");
+                continue; 
+            }
+
+            if (nomeDoTipoDoCampoStr == null) continue;
+
+            SymbolTable.JanderType campoBaseType;
+            switch (nomeDoTipoDoCampoStr.toLowerCase()) {
+                case "inteiro": campoBaseType = SymbolTable.JanderType.INTEGER; break;
+                case "real":    campoBaseType = SymbolTable.JanderType.REAL;    break;
+                case "literal": campoBaseType = SymbolTable.JanderType.LITERAL; break;
+                case "logico":  campoBaseType = SymbolTable.JanderType.LOGICAL; break;
+                default:
+                    if (symbolTable.containsSymbol(nomeDoTipoDoCampoStr) && symbolTable.getSymbolType(nomeDoTipoDoCampoStr) == SymbolTable.JanderType.RECORD) {
+                        campoBaseType = SymbolTable.JanderType.RECORD;
+                    } else {
+                        JanderSemanticoUtils.addSemanticError(campoVarCtx.tipo().start, "Tipo de campo '" + nomeDoTipoDoCampoStr + "' desconhecido no registro '" + recordTypeNameForContext + "'.");
+                        campoBaseType = SymbolTable.JanderType.INVALID;
+                    }
+                    break;
+            }
+
+            if (campoBaseType == SymbolTable.JanderType.INVALID) continue;
+            SymbolTable.JanderType tipoFinalDoCampo = campoIsPointer ? SymbolTable.JanderType.POINTER : campoBaseType;
+
+            for (IdentificadorContext nomeCampoIdentCtx : campoVarCtx.identificador()) {
+                String nomeCampo = nomeCampoIdentCtx.IDENT(0).getText(); 
+                if (nomeCampoIdentCtx.IDENT().size() > 1 || (nomeCampoIdentCtx.dimensao() != null && !nomeCampoIdentCtx.dimensao().getText().isEmpty()) ) {
+                    JanderSemanticoUtils.addSemanticError(nomeCampoIdentCtx.start, "Nomes de campo de registro devem ser identificadores simples na definição do tipo '" + recordTypeNameForContext + "'.");
+                    continue;
+                }
+                if (recordFields.containsKey(nomeCampo)) {
+                    JanderSemanticoUtils.addSemanticError(nomeCampoIdentCtx.start, "Campo '" + nomeCampo + "' declarado em duplicidade no registro '" + recordTypeNameForContext + "'.");
+                } else {
+                    recordFields.put(nomeCampo, tipoFinalDoCampo);
+                }
+            }
+        }
+        return recordFields;
+    }
 
     // Construtor inicializa a tabela de símbolos, PrintWriter e limpa quaisquer erros semânticos anteriores.
     public JanderSemantico(PrintWriter pw) {
@@ -71,153 +230,431 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
     // Chamado ao visitar uma declaração local (variáveis ou constantes).
     @Override
     public Void visitDeclaracao_local(Declaracao_localContext ctx) {
-        if (ctx.variavel() != null) {
-            // Se for uma declaração de variável (ex: 'declare var1, var2 : tipo').
-            visitVariavel(ctx.variavel());
-        }
+        // A gramática é:
+        // declaracao_local : 'declare' variavel
+        //                  | 'constante' IDENT ':' tipo_basico '=' valor_constante
+        //                  | 'tipo' IDENT ':' tipo;
 
-        // Trata declaração de constante (ex: 'constante NOME_CONSTANTE : tipo_basico = valor').
-        // Esta parte parece ser para 'constante IDENT : tipo_basico = valor_constante'
-        // A gramática atual pode implicar uma estrutura ligeiramente diferente para constantes se for apenas 'IDENT : tipo_basico'
-        if (ctx.IDENT() != null) { // Isso implica 'constante IDENT : tipo_basico ...'
+        // Verificamos pela presença do token da palavra-chave que inicia cada alternativa.
+        // Assumindo que os tokens no lexer são DECLARE, CONSTANTE, TIPO.
+        // Se 'declare' não for um token explícito mas parte da regra que leva a 'variavel'
+        // e 'variavel' só aparecer nessa alternativa, o primeiro if está correto.
+        // Vamos assumir que DECLARE, CONSTANTE, TIPO são os tokens que distinguem as regras.
+
+        if (ctx.DECLARE() != null) { 
+            // Alternativa: 'declare' variavel
+            // ctx.variavel() deve ser não-nulo aqui, conforme a gramática.
+            if (ctx.variavel() != null) {
+                visitVariavel(ctx.variavel());
+            }
+        } else if (ctx.CONSTANTE() != null) { 
+            // Alternativa: 'constante' IDENT ':' tipo_basico '=' valor_constante
+            // ctx.IDENT() e ctx.tipo_basico() devem ser não-nulos aqui.
             String constName = ctx.IDENT().getText();
-            String typeString = ctx.tipo_basico().getText();
-            JanderType constType = JanderType.INVALID; // Padrão para tipo inválido.
+            String typeString = ctx.tipo_basico().getText(); 
+            JanderType constType = JanderType.INVALID; 
 
-            // Determina o JanderType a partir da string de tipo.
             switch (typeString.toLowerCase()) {
-                case "inteiro":
-                    constType = JanderType.INTEGER;
-                    break;
-                case "real":
-                    constType = JanderType.REAL;
-                    break;
-                case "literal":
-                    constType = JanderType.LITERAL;
-                    break;
-                case "logico":
-                    constType = JanderType.LOGICAL;
-                    break;
+                case "inteiro": constType = JanderType.INTEGER; break;
+                case "real":    constType = JanderType.REAL;    break;
+                case "literal": constType = JanderType.LITERAL; break;
+                case "logico":  constType = JanderType.LOGICAL; break;
                 default:
-                    // Erro para string de tipo desconhecida poderia ser adicionado aqui se JanderSemanticoUtils não tratar.
-                    // JanderSemanticoUtils.addSemanticError(ctx.tipo_basico().getStart(), "tipo " + typeString + " desconhecido");
+                    // Este default não deveria ser alcançado se a gramática para tipo_basico for restrita.
+                    JanderSemanticoUtils.addSemanticError(ctx.tipo_basico().getStart(), "Tipo básico '" + typeString + "' desconhecido para constante.");
                     break;
             }
 
-            // Verifica redeclaração da constante.
             if (symbolTable.containsInCurrentScope(constName)) {
-                JanderSemanticoUtils.addSemanticError(ctx.IDENT().getSymbol(), "Variável " + constName + " já existe"); // A mensagem deveria ser "Constante ... já existe"
+                JanderSemanticoUtils.addSemanticError(ctx.IDENT().getSymbol(), "identificador " + constName + " ja declarado anteriormente");
             } else {
-                symbolTable.addSymbol(constName, constType); // Adiciona constante à tabela de símbolos.
-                // Nota: A atribuição de valor da constante e sua verificação de tipo ocorreriam aqui se a gramática incluísse.
+                if (constType != JanderType.INVALID) { // Só adiciona se o tipo da constante for válido
+                    symbolTable.addSymbol(constName, constType); 
+                    // TODO: Aqui você validaria o ctx.valor_constante() contra o constType.
+                }
+            }
+        } else if (ctx.TIPO() != null) { 
+            // Alternativa: 'tipo' IDENT ':' tipo
+            // ctx.IDENT() e ctx.tipo() devem ser não-nulos aqui.
+            // Esta é a lógica que você já tinha e que parece correta para esta alternativa.
+            String typeName = ctx.IDENT().getText();
+            Token typeNameToken = ctx.IDENT().getSymbol();
+            TipoContext typeDefinitionCtx = ctx.tipo();
+
+            if (symbolTable.containsInCurrentScope(typeName)) {
+                JanderSemanticoUtils.addSemanticError(typeNameToken, "identificador '" + typeName + "' ja declarado anteriormente");
+                return null;
+            }
+
+            if (typeDefinitionCtx.registro() != null) {
+                Map<String, SymbolTable.JanderType> recordFields = parseRecordStructure(typeDefinitionCtx.registro(), typeName);
+                // Permite registro vazio se variavel* estiver vazio, ou se parseRecordStructure falhar e retornar vazio (erro já adicionado)
+                if (!recordFields.isEmpty() || (typeDefinitionCtx.registro().variavel() != null && typeDefinitionCtx.registro().variavel().isEmpty())) { 
+                    symbolTable.addRecordSymbol(typeName, recordFields); 
+                }
+            } else if (typeDefinitionCtx.tipo_estendido() != null) {
+                Tipo_estendidoContext teCtx = typeDefinitionCtx.tipo_estendido();
+                boolean isPointer = teCtx.getChildCount() > 0 && teCtx.getChild(0).getText().equals("^");
+                String baseTypeNameStr;
+                Tipo_basico_identContext tbiCtx = teCtx.tipo_basico_ident();
+
+                if (tbiCtx == null) { // Segurança adicional
+                    JanderSemanticoUtils.addSemanticError(teCtx.start, "Estrutura interna de tipo_estendido inválida para definição de tipo '" + typeName + "'.");
+                    return null;
+                }
+
+                if (tbiCtx.tipo_basico() != null) {
+                    baseTypeNameStr = tbiCtx.tipo_basico().getText();
+                } else if (tbiCtx.IDENT() != null) {
+                    baseTypeNameStr = tbiCtx.IDENT().getText();
+                } else {
+                    JanderSemanticoUtils.addSemanticError(tbiCtx.start, "Definição de tipo alias inválida para '" + typeName + "'. Esperado tipo básico ou nome de tipo.");
+                    return null;
+                }
+
+                JanderType underlyingBaseType;
+                switch (baseTypeNameStr.toLowerCase()) {
+                    case "inteiro": underlyingBaseType = JanderType.INTEGER; break;
+                    case "real":    underlyingBaseType = JanderType.REAL;    break;
+                    case "literal": underlyingBaseType = JanderType.LITERAL; break;
+                    case "logico":  underlyingBaseType = JanderType.LOGICAL; break;
+                    default:
+                        if(symbolTable.containsSymbol(baseTypeNameStr)) {
+                            JanderType referencedType = symbolTable.getSymbolType(baseTypeNameStr);
+                            if (referencedType == JanderType.RECORD) {
+                                Map<String, JanderType> fieldsToCopy = symbolTable.getRecordFields(baseTypeNameStr);
+                                symbolTable.addRecordSymbol(typeName, fieldsToCopy);
+                                return null; 
+                            } else if (referencedType != JanderType.INVALID && referencedType != JanderType.POINTER) {
+                                underlyingBaseType = referencedType; // Alias para outro tipo alias básico
+                            } else {
+                                JanderSemanticoUtils.addSemanticError(tbiCtx.start, "Tipo base '" + baseTypeNameStr + "' para o alias '" + typeName + "' não é um tipo válido (registro ou alias para tipo básico).");
+                                return null;
+                            }
+                        } else {
+                            JanderSemanticoUtils.addSemanticError(tbiCtx.start, "Tipo base '" + baseTypeNameStr + "' para o alias '" + typeName + "' é desconhecido ou não declarado.");
+                            return null;
+                        }
+                }
+                
+                if (isPointer) {
+                    symbolTable.addPointerSymbol(typeName, underlyingBaseType);
+                } else {
+                    symbolTable.addSymbol(typeName, underlyingBaseType);
+                }
+            } else {
+                JanderSemanticoUtils.addSemanticError(typeNameToken, "Definição de tipo inválida para '" + typeName + "'. Esperado 'registro' ou 'tipo_estendido'.");
             }
         }
-        // return super.visitDeclaracao_local(ctx); // Pode não ser necessário se todas as partes forem tratadas diretamente.
         return null;
     }
-
     // Chamado ao visitar uma declaração de variável.
     @Override
     public Void visitVariavel(VariavelContext ctx) {
+        TipoContext tipoPrincipalCtx = ctx.tipo();
 
-        /* -------- 1. Descobre o tipo declarado -------- */
-        String rawType = ctx.tipo().getText();      // pode vir "^inteiro", "real"…
-        boolean isPointer = rawType.startsWith("^");
-        String typeString = isPointer ? rawType.substring(1) : rawType;   // remove '^' se existir
+        if (tipoPrincipalCtx.registro() != null) { // Declaração de variável com registro anônimo
+            // O nome "registro anônimo" é passado para o helper para contextualizar mensagens de erro.
+            Map<String, SymbolTable.JanderType> recordFields = parseRecordStructure(tipoPrincipalCtx.registro(), "registro anônimo");
 
-        SymbolTable.JanderType baseType;
-        switch (typeString.toLowerCase()) {
-            case "inteiro":  baseType = JanderType.INTEGER; break;
-            case "real":     baseType = JanderType.REAL;    break;
-            case "literal":  baseType = JanderType.LITERAL; break;
-            case "logico":   baseType = JanderType.LOGICAL; break;
-            default:         baseType = JanderType.INVALID; break;
-        }
+            for (IdentificadorContext identCtx : ctx.identificador()) {
+                // Na declaração, esperamos um nome simples para a variável de registro.
+                if (identCtx.IDENT().size() > 1 || (identCtx.dimensao() != null && !identCtx.dimensao().getText().isEmpty())) {
+                    JanderSemanticoUtils.addSemanticError(identCtx.start, "Nome de variável de registro '" + identCtx.getText() + "' deve ser um identificador simples na declaração (não pode conter '.' ou dimensões).");
+                    continue;
+                }
+                String varName = identCtx.IDENT(0).getText();
+                Token varTok = identCtx.start;
 
-        // Se houver '^', o tipo final é POINTER; caso contrário, o próprio baseType
-        SymbolTable.JanderType finalType = isPointer ? JanderType.POINTER : baseType;
+                if (symbolTable.containsInCurrentScope(varName)) {
+                    JanderSemanticoUtils.addSemanticError(varTok, "identificador '" + varName + "' ja declarado anteriormente");
+                } else {
+                    // Adiciona a variável com a estrutura de campos do registro anônimo.
+                    symbolTable.addRecordSymbol(varName, recordFields);
+                }
+            }
+        } else { // Declaração com tipo_estendido (pode ser básico, ponteiro, ou nome de tipo definido)
+            boolean isPointer = false;
+            Tipo_estendidoContext teCtx = tipoPrincipalCtx.tipo_estendido();
 
-        /* -------- 2. Para cada identificador declarado -------- */
-        for (IdentificadorContext identCtx : ctx.identificador()) {
-            String varName = identCtx.getText();
-            Token  varTok  = identCtx.start;
-
-            // redeclaração no mesmo escopo
-            if (symbolTable.containsInCurrentScope(varName)) {
-                JanderSemanticoUtils.addSemanticError(
-                    varTok, "identificador " + varName + " ja declarado anteriormente");
-                continue;
+            // Verifica se o tipo_estendido existe; deveria, se não for um registro.
+            if (teCtx == null) {
+                JanderSemanticoUtils.addSemanticError(tipoPrincipalCtx.start, "Estrutura de tipo inválida: esperado 'registro' ou 'tipo_estendido'.");
+                return null;
             }
 
-            if (isPointer) {
-                // Adiciona o símbolo como POINTER, apontando para baseType (inteiro, real, etc.)
-                symbolTable.addPointerSymbol(varName, JanderType.POINTER, baseType);
+            // Verifica se é um ponteiro (ex: ^inteiro)
+            if (teCtx.getChildCount() > 0 && teCtx.getChild(0).getText().equals("^")) {
+                isPointer = true;
+            }
+            
+            String typeString; // Nome do tipo (ex: "real", "tVinho")
+            Tipo_basico_identContext tbiCtx = teCtx.tipo_basico_ident();
+
+            if (tbiCtx == null) { // Segurança: tipo_estendido deve ter um tipo_basico_ident
+                JanderSemanticoUtils.addSemanticError(teCtx.start, "Estrutura interna de tipo_estendido inválida.");
+                return null;
+            }
+
+            if (tbiCtx.tipo_basico() != null) {
+                typeString = tbiCtx.tipo_basico().getText();
+            } else if (tbiCtx.IDENT() != null) { 
+                typeString = tbiCtx.IDENT().getText(); // Pode ser um tipo nomeado como "tVinho"
             } else {
-                symbolTable.addSymbol(varName, finalType);
+                JanderSemanticoUtils.addSemanticError(tbiCtx.start, "Estrutura de tipo irreconhecivel na declaracao de variavel. Esperado tipo básico ou nome de tipo.");
+                return null;
             }
 
-            // se tipo base é inválido (ex.: "^xyz" ou "xyz")
-            if (baseType == JanderType.INVALID) {
-                JanderSemanticoUtils.addSemanticError(
-                    varTok, "tipo " + typeString + " nao declarado");
+            SymbolTable.JanderType baseType; // O tipo base correspondente ao 'typeString'
+            JanderType typeNameInSymbolTable = symbolTable.getSymbolType(typeString); // Verifica se typeString é um tipo conhecido
+
+            switch (typeString.toLowerCase()) {
+                case "inteiro": baseType = SymbolTable.JanderType.INTEGER; break;
+                case "real":    baseType = SymbolTable.JanderType.REAL;    break;
+                case "literal": baseType = SymbolTable.JanderType.LITERAL; break;
+                case "logico":  baseType = SymbolTable.JanderType.LOGICAL; break;
+                default: // Não é um tipo básico; pode ser um tipo nomeado (ex: tVinho)
+                    if (symbolTable.containsSymbol(typeString)) { 
+                        if (typeNameInSymbolTable == JanderType.RECORD) { 
+                            baseType = SymbolTable.JanderType.RECORD; // É um tipo registro definido (ex: tVinho)
+                        } else if (typeNameInSymbolTable != JanderType.INVALID && typeNameInSymbolTable != JanderType.POINTER) {
+                            // É um alias para um tipo básico (ex: MeuInteiro : inteiro)
+                            // O tipo real do alias já está em typeNameInSymbolTable
+                            baseType = typeNameInSymbolTable;
+                        } else {
+                            JanderSemanticoUtils.addSemanticError(tbiCtx.IDENT().getSymbol(), "identificador '" + typeString + "' não denota um tipo válido para esta declaração (não é registro nem alias para tipo básico).");
+                            baseType = SymbolTable.JanderType.INVALID;
+                        }
+                    } else { // O nome do tipo (typeString) não foi declarado
+                        JanderSemanticoUtils.addSemanticError(tbiCtx.IDENT().getSymbol(), "Tipo '" + typeString + "' não declarado.");
+                        baseType = SymbolTable.JanderType.INVALID;
+                    }
+                    break;
+            }
+
+            // Se após todas as verificações o baseType for inválido, não prosseguir para as variáveis.
+            // Exceto se for um ponteiro, pois o tipo apontado (baseType) pode ser inválido mas a declaração do ponteiro em si é estruturalmente válida.
+            if (baseType == SymbolTable.JanderType.INVALID && !isPointer) {
+                // O erro específico já foi adicionado no bloco default do switch se 'typeString' era um IDENT não reconhecido.
+                // Esta é uma verificação final antes de processar os identificadores.
+                // Não adicionar erro duplicado aqui.
+            }
+
+            for (IdentificadorContext identCtx : ctx.identificador()) {
+                // Na declaração, esperamos um nome simples para a variável.
+                if (identCtx.IDENT().size() > 1 || (identCtx.dimensao() != null && !identCtx.dimensao().getText().isEmpty())) {
+                    JanderSemanticoUtils.addSemanticError(identCtx.start, "Nome de variável '" + identCtx.getText() + "' inválido para declaração (deve ser simples, sem '.' ou dimensões).");
+                    continue;
+                }
+                String varName = identCtx.IDENT(0).getText();
+                Token varTok = identCtx.start;
+
+                if (symbolTable.containsInCurrentScope(varName)) {
+                    JanderSemanticoUtils.addSemanticError(varTok, "identificador " + varName + " ja declarado anteriormente");
+                    continue;
+                }
+
+                // Se o tipo base é um REGISTRO (ex: declarando uma variável do tipo tVinho) e não é um ponteiro
+                if (baseType == SymbolTable.JanderType.RECORD && !isPointer) {
+                    Map<String, SymbolTable.JanderType> fieldsToCopy = symbolTable.getRecordFields(typeString); // 'typeString' é o nome do tipo registro (ex: "tVinho")
+                    
+                    // Verifica se o tipo registro nomeado foi encontrado e tem campos (ou é um registro vazio válido)
+                    if (fieldsToCopy.isEmpty() && !(symbolTable.containsSymbol(typeString) && symbolTable.getSymbolType(typeString) == JanderType.RECORD)) {
+                        // Isso aconteceria se typeString não fosse um tipo registro válido na tabela de símbolos
+                        // O erro de "Tipo 'typeString' não declarado" já teria sido emitido.
+                        // Aqui, apenas garantimos que não tentamos adicionar um símbolo com estrutura inválida.
+                    } else {
+                        symbolTable.addRecordSymbol(varName, new HashMap<>(fieldsToCopy));
+                    }
+                } else if (isPointer) {
+                    // Adiciona como ponteiro. baseType é o tipo PARA O QUAL ele aponta.
+                    // Se baseType for INVALID aqui (ex: ^tipoQueNaoExiste), o erro de tipo não declarado já foi dado (ou será, se for o caso).
+                    // A SymbolTable armazena o tipo apontado, mesmo que este seja marcado como INVALID no contexto da declaração do ponteiro.
+                    symbolTable.addPointerSymbol(varName, baseType); 
+                } else { // Tipo básico ou alias para tipo básico, não ponteiro
+                    if (baseType != JanderType.INVALID) { // Só adiciona se o tipo base do alias for válido
+                        symbolTable.addSymbol(varName, baseType);
+                    } else {
+                        // O erro de "tipo não declarado" para typeString (se era um IDENT) já foi dado.
+                        // Não adicionar erro duplicado para a variável aqui, apenas para o tipo.
+                    }
+                }
             }
         }
-        return super.visitVariavel(ctx);
+        return null;
     }
-
 
     // Chamado ao visitar um comando de atribuição (ex: variavel = expressao).
     @Override
     public Void visitCmdAtribuicao(CmdAtribuicaoContext ctx) {
-        String varName = ctx.identificador().getText(); // Nome da variável que está recebendo a atribuição.
-        Token varNameToken = ctx.identificador().start; // Token para o nome da variável.
+        // Supondo que ctx.identificador() pode retornar o contexto para "ponto1.x"
+        // e que ctx.identificador().getText() retorna a string "ponto1.x".
+        // E que ctx.identificador().IDENT() retorna uma lista de TerminalNode dos identificadores.
+        // Ex: para "ponto1.x", IDENT(0) é "ponto1", IDENT(1) é "x".
 
-        boolean temCircunflexo = ctx.getChild(0).getText().equals("^");
-        String alvo = (temCircunflexo ? "^" : "") + varName;
-        // Define a variável de atribuição atual para mensagens de erro contextuais de dentro da expressão.
-        JanderSemanticoUtils.setCurrentAssignmentVariable(varName);
-        // Verifica o tipo da expressão do lado direito.
-        // JanderSemanticoUtils.checkType retornará o tipo resultante ou JanderType.INVALID
-        // se a própria expressão tiver um erro de tipo interno (ex: "string" + 1).
-        JanderType expressionType = JanderSemanticoUtils.checkType(symbolTable, ctx.expressao());
-        JanderSemanticoUtils.clearCurrentAssignmentVariableStack(); // Limpa após a verificação da expressão.
+        String fullLhsText = ctx.identificador().getText(); // Ex: "ponto1.x"
+        Token lhsToken = ctx.identificador().start; // Token inicial do LHS
 
-        // Verifica se a variável do lado esquerdo foi declarada.
-        if (!symbolTable.containsSymbol(varName)) {
-            JanderSemanticoUtils.addSemanticError(varNameToken, "identificador " + varName + " nao declarado");
+        SymbolTable.JanderType lhsResolvedType = SymbolTable.JanderType.INVALID;
+
+        // Esta parte depende de como sua gramática expõe as partes de um 'identificador' complexo.
+        // Se ctx.identificador() tem uma lista de IDENTs:
+        List<org.antlr.v4.runtime.tree.TerminalNode> idParts = ctx.identificador().IDENT(); // Ajuste conforme sua gramática
+
+        if (idParts == null || idParts.isEmpty()) {
+            // Deveria ser pego pelo parser, mas como fallback:
+            JanderSemanticoUtils.addSemanticError(lhsToken, "Lado esquerdo da atribuicao invalido ou irreconhecivel.");
+            return null;
+        }
+
+        String baseVarName = idParts.get(0).getText();
+        Token baseVarToken = idParts.get(0).getSymbol();
+
+        if (!symbolTable.containsSymbol(baseVarName)) {
+            JanderSemanticoUtils.addSemanticError(baseVarToken, "identificador " + baseVarName + " nao declarado");
         } else {
-            // Variável está declarada, agora verifica a compatibilidade de tipos na atribuição.
-            JanderType varType = symbolTable.getSymbolType(varName); // Obtém o tipo declarado da variável.
+            SymbolTable.JanderType currentType = symbolTable.getSymbolType(baseVarName);
+            if (idParts.size() > 1) { // Acesso a campo: ex., ponto1.x
+                if (currentType != SymbolTable.JanderType.RECORD) {
+                    JanderSemanticoUtils.addSemanticError(baseVarToken, "identificador '" + baseVarName + "' nao e um registro.");
+                    lhsResolvedType = SymbolTable.JanderType.INVALID;
+                } else {
+                    Map<String, SymbolTable.JanderType> fields = symbolTable.getRecordFields(baseVarName);
+                    String fieldName = idParts.get(1).getText(); // Assumindo apenas um nível de acesso: var.campo
+                    Token fieldToken = idParts.get(1).getSymbol();
 
-            // JanderSemanticoUtils.areTypesIncompatible retornará true se:
-            // 1. expressionType for JanderType.INVALID (erro dentro da própria expressão), OU
-            // 2. varType e expressionType forem tipos válidos, mas incompatíveis para atribuição.
-            if (JanderSemanticoUtils.areTypesIncompatible(varType, expressionType)) {
-                JanderSemanticoUtils.addSemanticError(varNameToken, "atribuicao nao compativel para " + alvo);
+                    if (!fields.containsKey(fieldName)) {
+                        JanderSemanticoUtils.addSemanticError(fieldToken, "campo '" + fieldName + "' nao existe no registro '" + baseVarName + "'.");
+                        lhsResolvedType = SymbolTable.JanderType.INVALID;
+                    } else {
+                        lhsResolvedType = fields.get(fieldName); // Este deve ser REAL para ponto1.x
+                    }
+                }
+            } else { // Variável simples
+                lhsResolvedType = currentType;
             }
         }
-        // Chamar super.visitCmdAtribuicao(ctx) pode ser redundante se JanderSemanticoUtils.checkType
-        // já percorreu a subárvore da expressão. Se sim, substitua por "return null;".
-        // No entanto, se outros visitors para sub-regras de 'expressao' precisarem ser ativados, mantenha-o.
-        return super.visitCmdAtribuicao(ctx);
+        
+        // Tratar desreferenciamento com '^' (se aplicável e se o '^' for um token separado na regra de atribuição)
+        // Exemplo: boolean temCircunflexo = ctx.PONT_OP() != null; // Se PONT_OP é o token para '^'
+        // No seu caso de teste, não há desreferenciamento no LHS.
+        boolean temCircunflexo = ctx.getChild(0).getText().equals("^"); // Mantendo sua lógica original para ^
+        if (temCircunflexo) {
+            if (lhsResolvedType == SymbolTable.JanderType.POINTER) {
+                // Se o LHSResolvedType é POINTER, precisamos obter o tipo para o qual ele aponta.
+                // Isso pode ser complexo se o ponteiro for um campo de registro, ex: registro.campo_ponteiro^
+                // A função getPointedType da SymbolTable atualmente recebe apenas um nome simples.
+                // Para este exemplo, não é o caso.
+                if (idParts.size() == 1) { // Só para ponteiros simples por agora
+                    lhsResolvedType = symbolTable.getPointedType(baseVarName);
+                } else {
+                    JanderSemanticoUtils.addSemanticError(lhsToken, "Desreferencia de campo de registro ainda nao totalmente suportada neste contexto.");
+                    lhsResolvedType = SymbolTable.JanderType.INVALID;
+                }
+            } else if (lhsResolvedType != SymbolTable.JanderType.INVALID) {
+                JanderSemanticoUtils.addSemanticError(lhsToken, "operador '^' aplicado a um nao-ponteiro: " + fullLhsText);
+                lhsResolvedType = SymbolTable.JanderType.INVALID;
+            }
+        }
+
+
+        JanderSemanticoUtils.setCurrentAssignmentVariable(fullLhsText);
+        SymbolTable.JanderType expressionType = JanderSemanticoUtils.checkType(symbolTable, ctx.expressao());
+        JanderSemanticoUtils.clearCurrentAssignmentVariableStack();
+
+        if (lhsResolvedType != SymbolTable.JanderType.INVALID && expressionType != SymbolTable.JanderType.INVALID) {
+            if (JanderSemanticoUtils.areTypesIncompatible(lhsResolvedType, expressionType)) { //
+                String alvo = temCircunflexo ? "^" + fullLhsText : fullLhsText;
+                JanderSemanticoUtils.addSemanticError(lhsToken, "atribuicao nao compativel para " + alvo);
+            }
+        }
+        // return super.visitCmdAtribuicao(ctx); // Pode ser redundante se tudo for tratado
+        return null;
     }
 
     // Chamado ao visitar um comando de leitura (ex: leia variavel1, variavel2).
     @Override
     public Void visitCmdLeia(CmdLeiaContext ctx) {
-        // Verifica cada identificador no comando de leitura.
-        for (IdentificadorContext identCtx : ctx.identificador()) {
-            String varName = identCtx.getText(); // Nome da variável.
-            Token varNameToken = identCtx.start; // Token para relatório de erros.
-            // Garante que a variável foi declarada.
-            if (!symbolTable.containsSymbol(varName)) {
-                JanderSemanticoUtils.addSemanticError(varNameToken, "identificador " + varName + " nao declarado");
+        // A gramática é: cmdLeia : 'leia' '(' '^'? identificador (',' '^'? identificador)* ')'
+        // Precisamos iterar pelos argumentos e associar o '^' opcional a cada 'identificador'.
+        // A forma como ANTLR estrutura isso pode variar. Assumirei que podemos iterar
+        // pelos 'filhos' do contexto para fazer essa associação corretamente.
+
+        // Exemplo de iteração pelos filhos para associar '^' com 'identificador'.
+        // Os filhos relevantes seriam os tokens '^' (opcionais) e os IdentificadorContext.
+        // Pula 'leia' e '('.
+        for (int i = 2; i < ctx.getChildCount() -1; ) { // Cuidado com os limites e vírgulas
+            boolean hasCaret = false;
+            org.antlr.v4.runtime.tree.ParseTree child = ctx.getChild(i);
+
+            if (child.getText().equals("^")) {
+                hasCaret = true;
+                i++; // Avança para o próximo filho, que deve ser o identificador
+                if (i >= ctx.getChildCount() -1) break; // Evita erro se '^' for o último
+                child = ctx.getChild(i);
             }
-            // Verificações adicionais: garante que o tipo da variável é compatível com 'leia' (ex: não um tipo procedimento).
-            // Isso depende das regras da linguagem para 'leia'. Tipicamente, tipos básicos são permitidos.
+
+            if (child instanceof IdentificadorContext) {
+                IdentificadorContext identCtx = (IdentificadorContext) child;
+                StringBuilder fullAccessPath = new StringBuilder();
+                SymbolTable.JanderType resolvedType = resolveIdentificadorType(identCtx, this.symbolTable, fullAccessPath);
+                String pathStr = fullAccessPath.toString();
+
+                if (resolvedType == SymbolTable.JanderType.INVALID) {
+                    // Erro já foi adicionado por resolveIdentificadorType
+                    i++; // Próximo token (deve ser ',' ou ')')
+                    if (i < ctx.getChildCount() -1 && ctx.getChild(i).getText().equals(",")) {
+                        i++; // Pula a vírgula
+                    }
+                    continue;
+                }
+
+                SymbolTable.JanderType effectiveType = resolvedType;
+                if (hasCaret) {
+                    if (resolvedType == SymbolTable.JanderType.POINTER) { //
+                        // Para 'leia(^ptr)', ptr deve ser um ponteiro. Lê-se para onde ele aponta.
+                        String nameForPointedLookup = identCtx.IDENT(0).getText(); // Nome base do ponteiro
+                        effectiveType = this.symbolTable.getPointedType(nameForPointedLookup); //
+                        if (effectiveType == SymbolTable.JanderType.INVALID) {
+                            JanderSemanticoUtils.addSemanticError(identCtx.start, "Ponteiro '" + pathStr + "' não aponta para um tipo válido para leitura.");
+                        }
+                    } else {
+                        JanderSemanticoUtils.addSemanticError(identCtx.start, "Operador '^' aplicado a um não-ponteiro '" + pathStr + "' no comando leia.");
+                        effectiveType = SymbolTable.JanderType.INVALID;
+                    }
+                }
+
+                if (effectiveType != SymbolTable.JanderType.INVALID) {
+                    // Verifica se 'effectiveType' é adequado para 'leia'.
+                    // Tipicamente, tipos escalares básicos são permitidos.
+                    switch (effectiveType) {
+                        case INTEGER: //
+                        case REAL:    //
+                        case LITERAL: //
+                        case LOGICAL: // (assumindo que LOGICO pode ser lido)
+                            // Tipo OK para leia
+                            break;
+                        case POINTER: // Ler para uma variável ponteiro em si, não para onde aponta
+                            JanderSemanticoUtils.addSemanticError(identCtx.start, "Não é permitido ler diretamente para uma variável ponteiro '" + pathStr + "'. Use o operador '^' para ler no endereço apontado.");
+                            break;
+                        case RECORD: //
+                            JanderSemanticoUtils.addSemanticError(identCtx.start, "Não é permitido ler diretamente para uma variável de registro '" + pathStr + "'. Especifique um campo do registro.");
+                            break;
+                        default: // INVALID ou outros tipos não adequados
+                            JanderSemanticoUtils.addSemanticError(identCtx.start, "Tipo '" + effectiveType + "' do identificador '" + pathStr + "' não é permitido no comando leia.");
+                            break;
+                    }
+                }
+            }
+            i++; // Próximo token (deve ser ',' ou ')')
+            if (i < ctx.getChildCount() -1 && ctx.getChild(i).getText().equals(",")) {
+                i++; // Pula a vírgula
+            }
         }
-        return super.visitCmdLeia(ctx); // Continua visitando filhos, se houver.
+        return null;
     }
+    
+
     @Override
     public Void visitCmdChamada(CmdChamadaContext ctx) {
         String nome = ctx.IDENT().getText();

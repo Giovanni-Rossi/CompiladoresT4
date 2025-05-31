@@ -2,6 +2,8 @@ package br.ufscar.dc.compiladores;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+
 import org.antlr.v4.runtime.Token;
 
 import br.ufscar.dc.compiladores.JanderParser.*;
@@ -33,12 +35,19 @@ public class JanderSemanticoUtils {
 
     // Verifica se dois tipos Jander são incompatíveis.
     public static boolean areTypesIncompatible(JanderType targetType, JanderType sourceType) {
-        if (targetType == JanderType.POINTER || sourceType == JanderType.POINTER) {
-            return targetType != JanderType.POINTER || sourceType != JanderType.POINTER;
-        }
         // Se qualquer um dos tipos for inválido, eles são considerados incompatíveis.
         if (targetType == JanderType.INVALID || sourceType == JanderType.INVALID) {
             return true;
+        }
+
+        // Casos de compatibilidade específicos para POINTER
+        if (targetType == JanderType.POINTER && sourceType == JanderType.POINTER) {
+            return false; // Ponteiros são compatíveis entre si para atribuição direta (e.g., ptr1 <- ptr2)
+        }
+        // Se um é ponteiro e o outro não, são incompatíveis (ex: inteiro <- ^inteiro é false aqui,
+        // mas a lógica de ^identificador deveria ter desreferenciado)
+        if (targetType == JanderType.POINTER || sourceType == JanderType.POINTER) {
+            return true; // Se um é ponteiro e o outro não, são incompatíveis (ex: int <- ptr)
         }
 
         // Verifica a compatibilidade numérica (REAL e INTEGER).
@@ -57,8 +66,8 @@ public class JanderSemanticoUtils {
         if (targetType == JanderType.LOGICAL && sourceType == JanderType.LOGICAL) {
             return false;
         }
-        
-        // Verifica a correspondência exata de tipos.
+
+        // Verifica a correspondência exata de tipos (se não caiu em nenhum dos casos acima).
         if (targetType == sourceType) {
             return false;
         }
@@ -208,43 +217,153 @@ public class JanderSemanticoUtils {
 
     // Verifica o tipo de uma parcela unária.
     public static JanderType checkType(SymbolTable symbolTable, JanderParser.Parcela_unarioContext ctx) {
-        if (ctx.identificador() != null) { // Identificador (variável ou ponteiro).
-            String simpleName = ctx.identificador().IDENT(0).getText(); 
-            // Verifica se o identificador foi declarado.
-            if (!symbolTable.containsSymbol(simpleName)) {
-                addSemanticError(ctx.identificador().getStart(), "identificador " + simpleName + " nao declarado");
+        // Regra da gramática: parcela_unario : '^'? identificador | ...
+        if (ctx.identificador() != null) {
+            IdentificadorContext identCtx = ctx.identificador();
+            // Verifica se há um operador de desreferência '^' antes do identificador
+            boolean isDereferenced = ctx.getChild(0) != null && ctx.getChild(0).getText().equals("^"); //
+
+            // Lógica para resolver o tipo do identificador (incluindo acesso a campos)
+            // Similar ao resolveIdentificadorType, mas adaptado para este contexto estático
+            // e sem o StringBuilder como parâmetro de saída explícito para o caminho completo.
+            List<org.antlr.v4.runtime.tree.TerminalNode> idParts = identCtx.IDENT(); //
+            JanderType resolvedType = JanderType.INVALID;
+            String fullAccessPathForError = ""; // Para mensagens de erro
+
+            if (idParts.isEmpty()) {
+                addSemanticError(identCtx.start, "Identificador inválido na expressão.");
                 return JanderType.INVALID;
-            } 
-            return symbolTable.getSymbolType(simpleName); // Retorna o tipo da tabela de símbolos.
-        } else if (ctx.NUM_INT() != null) { // Literal inteiro.
+            }
+
+            String baseVarName = idParts.get(0).getText();
+            Token baseVarToken = idParts.get(0).getSymbol();
+            fullAccessPathForError = baseVarName;
+
+            if (!symbolTable.containsSymbol(baseVarName)) { //
+                addSemanticError(baseVarToken, "identificador " + identCtx.getText() +" nao declarado"); //
+                resolvedType = JanderType.INVALID;
+            } else {
+                resolvedType = symbolTable.getSymbolType(baseVarName); //
+                for (int i = 1; i < idParts.size(); i++) {
+                    String fieldName = idParts.get(i).getText();
+                    Token fieldToken = idParts.get(i).getSymbol();
+                    String currentRecordPath = fullAccessPathForError;
+                    fullAccessPathForError += "." + fieldName;
+
+                    if (resolvedType != JanderType.RECORD) { //
+                        addSemanticError(idParts.get(i - 1).getSymbol(), "identificador '" + currentRecordPath + "' não é um registro para acessar o campo '" + fieldName + "'.");
+                        resolvedType = JanderType.INVALID;
+                        break; 
+                    }
+                    
+                    String recordVariableForFieldLookup = idParts.get(0).getText();
+                    if (i > 1) {
+                        addSemanticError(fieldToken, "Acesso a campos de registros aninhados (ex: var.regcampo.subcampo) em expressão não é diretamente suportado por esta resolução simplificada.");
+                        resolvedType = JanderType.INVALID;
+                        break;
+                    }
+
+                    Map<String, JanderType> fields = symbolTable.getRecordFields(recordVariableForFieldLookup); //
+                    if (fields.isEmpty() && resolvedType == JanderType.RECORD) {
+                        addSemanticError(idParts.get(i-1).getSymbol(), "identificador '" + currentRecordPath + "' é um registro, mas parece não ter campos definidos ou acessíveis.");
+                        resolvedType = JanderType.INVALID;
+                        break;
+                    }
+                    if (!fields.containsKey(fieldName)) {
+                        addSemanticError(fieldToken, "Campo '" + fieldName + "' não existe no registro '" + currentRecordPath + "'.");
+                        resolvedType = JanderType.INVALID;
+                        break; 
+                    }
+                    resolvedType = fields.get(fieldName);
+                }
+            }
+            
+            // Lida com acesso a dimensões de array (identCtx.dimensao())
+            if (resolvedType != JanderType.INVALID && identCtx.dimensao() != null && !identCtx.dimensao().exp_aritmetica().isEmpty()) { //
+                addSemanticError(identCtx.dimensao().start, "Acesso a dimensões de array (ex: var[indice]) em expressão não implementado.");
+                resolvedType = JanderType.INVALID;
+            }
+
+            // Agora lida com o desreferenciamento (^)
+            if (isDereferenced) {
+                if (resolvedType == JanderType.POINTER) { //
+                    String nameForPointedLookup = idParts.get(0).getText(); // Nome base do ponteiro
+                    if (idParts.size() > 1) { // Ponteiro é um campo de registro, ex: ^reg.ptr_field
+                        // A SymbolTable.getPointedType atual espera um nome simples.
+                        // Para desreferenciar um campo ponteiro, seria necessário mais informação ou uma SymbolTable mais complexa.
+                        addSemanticError(identCtx.start, "Desreferência de campo de registro que é ponteiro ('^') em expressão não é totalmente suportada nesta versão.");
+                        return JanderType.INVALID;
+                    }
+                    JanderType pointedType = symbolTable.getPointedType(nameForPointedLookup); //
+                    if (pointedType == JanderType.INVALID) {
+                        addSemanticError(identCtx.start, "Ponteiro '" + fullAccessPathForError + "' não aponta para um tipo válido.");
+                    }
+                    return pointedType; // Retorna o tipo para o qual o ponteiro aponta
+                } else if (resolvedType != JanderType.INVALID) { // Só adiciona erro se não houve erro anterior no resolvedType
+                    addSemanticError(identCtx.start, "Operador '^' aplicado a um não-ponteiro: " + fullAccessPathForError); //
+                    return JanderType.INVALID;
+                } else { // resolvedType já era INVALID
+                    return JanderType.INVALID;
+                }
+            }
+            return resolvedType; // Retorna o tipo do identificador (ou do campo)
+
+        } else if (ctx.NUM_INT() != null) { //
             return JanderType.INTEGER;
-        } else if (ctx.NUM_REAL() != null) { // Literal real.
+        } else if (ctx.NUM_REAL() != null) { //
             return JanderType.REAL;
-        } else if (ctx.IDENT() != null && ctx.ABREPAR() != null) { // Chamada de função.
+        } else if (ctx.IDENT() != null && ctx.ABREPAR() != null) { // Chamada de função: IDENT '(' expressao (',' expressao)* ')'
             String funcName = ctx.IDENT().getText();
-            // Verifica se a função foi declarada.
-            if (!symbolTable.containsSymbol(funcName)) {
+            Token funcToken = ctx.IDENT().getSymbol();
+
+            if (!symbolTable.containsSymbol(funcName)) { //
+                addSemanticError(funcToken, "Identificador '" + funcName + "' (função) não declarado."); //
                 return JanderType.INVALID;
-            } 
-            return symbolTable.getSymbolType(funcName); // Retorna o tipo de retorno da função.
-        } else if (ctx.ABREPAR() != null && ctx.expressao() != null && !ctx.expressao().isEmpty()) { // Expressão entre parênteses.
-             return checkType(symbolTable, ctx.expressao(0)); // Tipo da expressão interna.
+            }
+            
+            // Verifica se é realmente uma função e obtém o tipo de retorno
+            JanderType returnType = symbolTable.getReturnType(funcName); //
+            // Se getReturnType retorna INVALID, mas o símbolo existe, pode não ser uma função ou ser um procedimento.
+            if (returnType == JanderType.INVALID && symbolTable.getSymbolType(funcName) != JanderType.INVALID) {
+                addSemanticError(funcToken, "Identificador '" + funcName + "' não é uma função válida ou não pode ser usado neste contexto de expressão.");
+                return JanderType.INVALID;
+            } else if (returnType == JanderType.INVALID) { // Símbolo não existe ou não tem tipo de retorno definido
+                // O erro de "não declarado" já teria sido pego acima se containsSymbol fosse falso.
+                // Este caso cobre situações onde o símbolo existe mas não é uma função com tipo de retorno.
+                addSemanticError(funcToken, "Função '" + funcName + "' não tem um tipo de retorno válido ou não está corretamente definida.");
+                return JanderType.INVALID;
+            }
+
+            // Validação dos argumentos da chamada de função
+            validateCallArguments(funcToken, funcName, ctx.expressao(), symbolTable); // (adaptado de CmdChamada)
+            
+            return returnType; // Retorna o tipo de retorno da função
+
+        } else if (ctx.ABREPAR() != null && ctx.expressao() != null && !ctx.expressao().isEmpty()) { // Expressão entre parênteses: '(' expressao ')'
+            return checkType(symbolTable, ctx.expressao(0)); // (chamada recursiva)
         }
-        return JanderType.INVALID; // Padrão para inválido se nenhum caso corresponder.
+        return JanderType.INVALID; // Caso padrão, se nenhuma das regras acima corresponder
     }
 
     // Verifica o tipo de uma parcela não unária.
     public static JanderType checkType(SymbolTable symbolTable, JanderParser.Parcela_nao_unarioContext ctx) {
         if (ctx.identificador() != null) { // Endereço de ponteiro (ex: &identificador).
             String simpleName = ctx.identificador().IDENT(0).getText();
-            // Verifica se o identificador foi declarado (relevante para o endereço do ponteiro).
+            Token idToken = ctx.identificador().getStart();
+
+            // Verifica se o identificador foi declarado.
             if (!symbolTable.containsSymbol(simpleName)) {
-                // Erro para identificador não declarado pode ser adicionado em outro lugar ou depende do contexto.
+                addSemanticError(idToken, "identificador " + simpleName + " nao declarado");
                 return JanderType.INVALID;
             }
-            // O tipo de '&identificador' é tipicamente um tipo ponteiro,
-            JanderType typeOfVariable = symbolTable.getSymbolType(simpleName);
-            return JanderType.POINTER; // Este caso pode precisar de lógica mais específica para tipos ponteiro.
+            // Quando usamos '&identificador', estamos obtendo o *endereço* de 'identificador'.
+            // O tipo de '&identificador' é sempre um ponteiro para o tipo de 'identificador'.
+            // Então, se 'identificador' é INTEIRO, '&identificador' é POINTER_TO_INTEGER.
+            // Como nossa enumeração JanderType só tem 'POINTER', representamos isso.
+            // Para verificação de compatibilidade, o tipo do lado direito será genericamente POINTER.
+            // A semântica de atribuição (`visitCmdAtribuicao`) precisará verificar se o tipo
+            // do ponteiro do lado esquerdo (`^T`) é compatível com o tipo do lado direito (`&T`).
+            return JanderType.POINTER; // Retorna que é um tipo POINTER
         } else if (ctx.CADEIA() != null) { // Literal string.
             return JanderType.LITERAL;
         }
