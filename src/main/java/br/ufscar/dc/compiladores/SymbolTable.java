@@ -6,7 +6,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.List;
 
-/** Tabela de símbolos com suporte a escopos aninhados e assinaturas de funções */
 public class SymbolTable {
 
     public enum JanderType {
@@ -15,32 +14,63 @@ public class SymbolTable {
         REAL,
         LOGICAL,
         POINTER,
+        RECORD,
         INVALID
     }
 
     static class SymbolTableEntry {
         String name;
         JanderType type;
-        List<JanderType> paramTypes;   // novos: tipos de parâmetros (vazio para variáveis)
-        JanderType returnType;         // novo: tipo de retorno de função (null se não for função)
+        JanderType pointedType;
+        List<JanderType> paramTypes;
+        JanderType returnType;
+        Map<String, JanderType> recordFields;
 
-        private SymbolTableEntry(String name, JanderType type) {
+        SymbolTableEntry(String name, JanderType type) {
             this.name = name;
             this.type = type;
+            this.pointedType = JanderType.INVALID;
+            this.recordFields = null;
         }
+
+        private SymbolTableEntry(String name, JanderType type, JanderType pointedType) {
+            this.name = name;
+            this.type = type;
+            this.pointedType = pointedType;
+            this.recordFields = null;
+        }
+
         private SymbolTableEntry(String name, JanderType returnType, List<JanderType> paramTypes) {
             this.name = name;
-            this.type = returnType;       // guardamos o returnType em `type`
+            this.type = returnType;
             this.returnType = returnType;
             this.paramTypes = paramTypes;
+            this.recordFields = null;
+        }
+
+        SymbolTableEntry(String name, JanderType type, Map<String, JanderType> recordFields) {
+            this.name = name;
+            this.type = type;
+            this.recordFields = recordFields;
+        }
+
+        public boolean isRecordType() {
+            return this.type == JanderType.RECORD && this.recordFields != null;
+        }
+
+        public JanderType getFieldType(String fieldName) {
+            if (recordFields != null && recordFields.containsKey(fieldName)) {
+                return recordFields.get(fieldName);
+            }
+            return JanderType.INVALID;
         }
     }
 
-    private final Deque<Map<String, SymbolTableEntry>> scopes;
+    final Deque<Map<String, SymbolTableEntry>> scopes;
 
     public SymbolTable() {
         this.scopes = new ArrayDeque<>();
-        this.scopes.push(new HashMap<>()); // escopo global
+        this.scopes.push(new HashMap<>());
     }
 
     public void openScope() {
@@ -51,27 +81,22 @@ public class SymbolTable {
         if (scopes.size() > 1) scopes.pop();
     }
 
-    /** Insere variável/constante no escopo atual */
     public void addSymbol(String name, JanderType type) {
         scopes.peek().put(name, new SymbolTableEntry(name, type));
     }
 
-    /** Insere função/procedimento com assinatura completa */
     public void addFunction(String name, JanderType returnType, List<JanderType> paramTypes) {
         scopes.peek().put(name, new SymbolTableEntry(name, returnType, paramTypes));
     }
 
-    /** Verifica existência em qualquer escopo */
     public boolean containsSymbol(String name) {
         return scopes.stream().anyMatch(s -> s.containsKey(name));
     }
 
-    /** Verifica existência somente no escopo atual */
     public boolean containsInCurrentScope(String name) {
         return scopes.peek().containsKey(name);
     }
 
-    /** Recupera tipo de variável ou tipo de retorno da função */
     public JanderType getSymbolType(String name) {
         for (Map<String, SymbolTableEntry> scope : scopes) {
             if (scope.containsKey(name)) {
@@ -81,7 +106,15 @@ public class SymbolTable {
         return JanderType.INVALID;
     }
 
-    /** Recupera lista de tipos de parâmetros esperados para chamada */
+    public SymbolTableEntry getSymbolEntry(String name) {
+        for (Map<String, SymbolTableEntry> scope : scopes) {
+            if (scope.containsKey(name)) {
+                return scope.get(name);
+            }
+        }
+        return null;
+    }
+
     public List<JanderType> getParamTypes(String name) {
         for (Map<String, SymbolTableEntry> scope : scopes) {
             if (scope.containsKey(name)) {
@@ -93,7 +126,6 @@ public class SymbolTable {
         return List.of();
     }
 
-    /** Recupera tipo de retorno de função/procedimento */
     public JanderType getReturnType(String name) {
         for (Map<String, SymbolTableEntry> scope : scopes) {
             if (scope.containsKey(name)) {
@@ -102,5 +134,22 @@ public class SymbolTable {
             }
         }
         return JanderType.INVALID;
+    }
+
+    public void addPointerSymbol(String name, JanderType type, JanderType pointedType) {
+        scopes.peek().put(name, new SymbolTableEntry(name, type, pointedType));
+    }
+
+    public JanderType getPointedType(String name) {
+        for (Map<String, SymbolTableEntry> scope : scopes) {
+            if (scope.containsKey(name)) {
+                return scope.get(name).pointedType;
+            }
+        }
+        return JanderType.INVALID;
+    }
+
+    public void addRecordType(String name, Map<String, JanderType> fields) {
+        scopes.peek().put(name, new SymbolTableEntry(name, JanderType.RECORD, fields));
     }
 }
