@@ -243,9 +243,8 @@ public class JanderSemanticoUtils {
                 return JanderType.INVALID;
             }
             // O tipo de '&identificador' é tipicamente um tipo ponteiro,
-            // que pode ser tratado de forma diferente ou precisar de um JanderType 'POINTER' específico.
-            // Por enquanto, se for apenas um identificador em um contexto não unário sem ser uma string, provavelmente é um erro ou precisa de tratamento específico.
-            return JanderType.INVALID; // Este caso pode precisar de lógica mais específica para tipos ponteiro.
+            JanderType typeOfVariable = symbolTable.getSymbolType(simpleName);
+            return JanderType.POINTER; // Este caso pode precisar de lógica mais específica para tipos ponteiro.
         } else if (ctx.CADEIA() != null) { // Literal string.
             return JanderType.LITERAL;
         }

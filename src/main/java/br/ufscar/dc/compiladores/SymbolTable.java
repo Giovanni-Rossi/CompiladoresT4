@@ -21,12 +21,20 @@ public class SymbolTable {
     static class SymbolTableEntry {
         String name;
         JanderType type;
+        JanderType pointedType;
         List<JanderType> paramTypes;   // novos: tipos de parâmetros (vazio para variáveis)
         JanderType returnType;         // novo: tipo de retorno de função (null se não for função)
 
         private SymbolTableEntry(String name, JanderType type) {
             this.name = name;
             this.type = type;
+            this.pointedType = JanderType.INVALID;
+        }
+        // Construtor para ponteiros
+        private SymbolTableEntry(String name, JanderType type, JanderType pointedType) {
+            this.name = name;
+            this.type = type; // Deve ser JanderType.POINTER
+            this.pointedType = pointedType; // O tipo real para o qual ele aponta
         }
         private SymbolTableEntry(String name, JanderType returnType, List<JanderType> paramTypes) {
             this.name = name;
@@ -99,6 +107,21 @@ public class SymbolTable {
             if (scope.containsKey(name)) {
                 SymbolTableEntry e = scope.get(name);
                 return e.returnType != null ? e.returnType : JanderType.INVALID;
+            }
+        }
+        return JanderType.INVALID;
+    }
+
+    // Método para adicionar símbolos de ponteiro
+    public void addPointerSymbol(String name, JanderType type, JanderType pointedType) {
+        scopes.peek().put(name, new SymbolTableEntry(name, type, pointedType));
+    }
+
+    // Método para obter o tipo para o qual o ponteiro aponta
+    public JanderType getPointedType(String name) {
+        for (Map<String, SymbolTableEntry> scope : scopes) {
+            if (scope.containsKey(name)) {
+                return scope.get(name).pointedType;
             }
         }
         return JanderType.INVALID;

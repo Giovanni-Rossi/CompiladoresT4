@@ -149,7 +149,12 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
                 continue;
             }
 
-            symbolTable.addSymbol(varName, finalType);
+            if (isPointer) {
+                // Adiciona o símbolo como POINTER, apontando para baseType (inteiro, real, etc.)
+                symbolTable.addPointerSymbol(varName, JanderType.POINTER, baseType);
+            } else {
+                symbolTable.addSymbol(varName, finalType);
+            }
 
             // se tipo base é inválido (ex.: "^xyz" ou "xyz")
             if (baseType == JanderType.INVALID) {
