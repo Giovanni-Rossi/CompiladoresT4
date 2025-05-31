@@ -6,6 +6,7 @@ import br.ufscar.dc.compiladores.SymbolTable;
 import org.antlr.v4.runtime.Token;
 
 import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -172,6 +173,66 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
         return recordFields;
     }
 
+    private static class TypeParsingResult {
+        JanderType finalType;
+        JanderType baseTypeIfPointer; // Relevante se finalType for POINTER
+        String originalTypeName;    // Ex: "tVinho" ou "inteiro" para referência posterior
+
+        TypeParsingResult(JanderType finalType, JanderType baseTypeIfPointer, String originalTypeName) {
+            this.finalType = finalType;
+            this.baseTypeIfPointer = baseTypeIfPointer;
+            this.originalTypeName = originalTypeName;
+        }
+    }
+
+    // Método auxiliar para analisar Tipo_estendidoContext
+    private TypeParsingResult parseTipoEstendido(Tipo_estendidoContext teCtx) {
+        if (teCtx == null || teCtx.tipo_basico_ident() == null) {
+            // Adicionar erro se teCtx ou tbiCtx for null, indicando problema na gramática ou árvore
+            if (teCtx != null) JanderSemanticoUtils.addSemanticError(teCtx.start, "Estrutura de tipo estendido inválida.");
+            return new TypeParsingResult(JanderType.INVALID, JanderType.INVALID, "");
+        }
+
+        boolean isPointer = teCtx.getChild(0) != null && teCtx.getChild(0).getText().equals("^");
+        Tipo_basico_identContext tbiCtx = teCtx.tipo_basico_ident();
+        String typeNameStr;
+
+        if (tbiCtx.tipo_basico() != null) {
+            typeNameStr = tbiCtx.tipo_basico().getText();
+        } else if (tbiCtx.IDENT() != null) {
+            typeNameStr = tbiCtx.IDENT().getText();
+        } else {
+            JanderSemanticoUtils.addSemanticError(tbiCtx.start, "Estrutura de tipo inválida em tipo_estendido (esperado tipo básico ou IDENT).");
+            return new TypeParsingResult(JanderType.INVALID, JanderType.INVALID, "");
+        }
+
+        JanderType baseType;
+        JanderType typeInTable = symbolTable.getSymbolType(typeNameStr);
+
+        switch (typeNameStr.toLowerCase()) {
+            case "inteiro": baseType = JanderType.INTEGER; break;
+            case "real":    baseType = JanderType.REAL;    break;
+            case "literal": baseType = JanderType.LITERAL; break;
+            case "logico":  baseType = JanderType.LOGICAL; break;
+            default: 
+                if (symbolTable.containsSymbol(typeNameStr)) {
+                    if (typeInTable == JanderType.RECORD || 
+                        (typeInTable != JanderType.INVALID && typeInTable != JanderType.POINTER && typeInTable != JanderType.RECORD)) { // É um tipo registro ou um alias para tipo básico
+                        baseType = typeInTable;
+                    } else {
+                        JanderSemanticoUtils.addSemanticError(tbiCtx.IDENT().getSymbol(), "Identificador '" + typeNameStr + "' não denota um tipo válido (não é registro nem alias para tipo básico).");
+                        baseType = JanderType.INVALID;
+                    }
+                } else {
+                    JanderSemanticoUtils.addSemanticError(tbiCtx.IDENT().getSymbol(), "Tipo '" + typeNameStr + "' não declarado.");
+                    baseType = JanderType.INVALID;
+                }
+                break;
+        }
+        JanderType finalType = isPointer ? JanderType.POINTER : baseType;
+        return new TypeParsingResult(finalType, isPointer ? baseType : null, typeNameStr);
+    }
+
     // Construtor inicializa a tabela de símbolos, PrintWriter e limpa quaisquer erros semânticos anteriores.
     public JanderSemantico(PrintWriter pw) {
         this.symbolTable = new SymbolTable();
@@ -212,19 +273,122 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
     @Override
     public Void visitDecl_local_global(Decl_local_globalContext ctx) {
         if (ctx.declaracao_global() != null) {
-        // abre novo escopo para procedimento/função
-        symbolTable.openScope();
-        boolean anterior = dentroDeFuncao;
-        if (ctx.declaracao_global().FUNCAO() != null) {
-            dentroDeFuncao = true;
+            visitDeclaracao_global(ctx.declaracao_global()); // Tratamento de escopo será feito em visitDeclaracao_global
+        } else if (ctx.declaracao_local() != null) {
+            visitDeclaracao_local(ctx.declaracao_local());
         }
-        super.visitDeclaracao_global(ctx.declaracao_global());
-        dentroDeFuncao = anterior;
-        symbolTable.closeScope();
-    } else if (ctx.declaracao_local() != null) {
-        super.visitDeclaracao_local(ctx.declaracao_local());
+        return null;
     }
-        return null; // Nenhuma ação específica aqui, tratada pelos visitors filhos.
+
+    @Override
+    public Void visitDeclaracao_global(Declaracao_globalContext globalCtx) {
+        String funcName = globalCtx.IDENT().getText();
+        Token funcNameToken = globalCtx.IDENT().getSymbol();
+        List<JanderType> paramTypesForSignature = new ArrayList<>();
+        JanderType returnType = JanderType.INVALID; // Default para procedimentos
+
+        // 1. Pré-analisa os parâmetros para construir a lista de tipos para a assinatura da função
+        if (globalCtx.parametros() != null) {
+            for (ParametroContext paramCtx : globalCtx.parametros().parametro()) {
+                TypeParsingResult paramTypeInfo = parseTipoEstendido(paramCtx.tipo_estendido());
+                JanderType finalParamType = paramTypeInfo.finalType;
+                if (finalParamType == JanderType.INVALID && paramTypeInfo.originalTypeName != null && !paramTypeInfo.originalTypeName.isEmpty()) {
+                    JanderSemanticoUtils.addSemanticError(paramCtx.tipo_estendido().start, "Tipo do parametro '" + paramTypeInfo.originalTypeName + "' invalido na declaracao de " + funcName);
+                }
+                for (int i = 0; i < paramCtx.identificador().size(); i++) {
+                    paramTypesForSignature.add(finalParamType);
+                }
+            }
+        }
+
+        // 2. Determina o tipo de retorno se for uma função
+        if (globalCtx.FUNCAO() != null) {
+            TypeParsingResult returnTypeInfo = parseTipoEstendido(globalCtx.tipo_estendido());
+            returnType = returnTypeInfo.finalType;
+            if (returnType == JanderType.INVALID && returnTypeInfo.originalTypeName != null && !returnTypeInfo.originalTypeName.isEmpty()) {
+                JanderSemanticoUtils.addSemanticError(globalCtx.tipo_estendido().start, "Tipo de retorno '" + returnTypeInfo.originalTypeName + "' invalido para funcao " + funcName);
+            }
+        }
+
+        // 3. Adiciona a função/procedimento ao escopo ATUAL (que deve ser o global neste ponto)
+        //    Verifica se já existe um símbolo com este nome no escopo atual.
+        if (symbolTable.containsInCurrentScope(funcName)) {
+            JanderSemanticoUtils.addSemanticError(funcNameToken, "Identificador '" + funcName + "' ja declarado anteriormente");
+            // Não prossegue com a abertura de escopo e análise do corpo se houver redeclaração.
+            return null; 
+        }
+        symbolTable.addFunction(funcName, returnType, paramTypesForSignature);
+
+        // 4. Abre um novo escopo para o corpo da função e seus parâmetros
+        symbolTable.openScope();
+        boolean oldDentroDeFuncao = this.dentroDeFuncao; // Salva o estado anterior
+        if (globalCtx.FUNCAO() != null) {
+            this.dentroDeFuncao = true;
+        }
+
+        // 5. Adiciona os parâmetros ao NOVO escopo (o escopo da função)
+        if (globalCtx.parametros() != null) {
+            for (ParametroContext paramCtx : globalCtx.parametros().parametro()) {
+                TypeParsingResult typeInfo = parseTipoEstendido(paramCtx.tipo_estendido());
+                JanderType paramFinalType = typeInfo.finalType;
+                JanderType paramBaseTypeIfPointer = typeInfo.baseTypeIfPointer;
+                String paramTypeNameIfRecord = (typeInfo.finalType == JanderType.RECORD) ? typeInfo.originalTypeName : null;
+
+                for (IdentificadorContext identCtx : paramCtx.identificador()) {
+                    if (identCtx.IDENT().size() > 1 || (identCtx.dimensao() != null && !identCtx.dimensao().getText().isEmpty())) {
+                        JanderSemanticoUtils.addSemanticError(identCtx.start, "Nome de parametro '" + identCtx.getText() + "' invalido (deve ser simples).");
+                        continue;
+                    }
+                    String paramName = identCtx.IDENT(0).getText();
+                    Token paramToken = identCtx.IDENT(0).getSymbol();
+
+                    if (symbolTable.containsInCurrentScope(paramName)) {
+                        JanderSemanticoUtils.addSemanticError(paramToken, "Identificador '" + paramName + "' (parametro) ja declarado neste escopo");
+                    } else {
+                        if (paramFinalType == JanderType.POINTER) {
+                            symbolTable.addPointerSymbol(paramName, paramBaseTypeIfPointer);
+                        } else if (paramFinalType == JanderType.RECORD) {
+                            if (paramTypeNameIfRecord != null) {
+                                // Busca a definição do tipo registro no escopo pai (onde foi declarado)
+                                Map<String, JanderType> fields = symbolTable.getRecordFields(paramTypeNameIfRecord); 
+                                if (fields.isEmpty() && !(symbolTable.containsSymbol(paramTypeNameIfRecord) && symbolTable.getSymbolType(paramTypeNameIfRecord) == JanderType.RECORD)) {
+                                    // Se getRecordFields retorna vazio E não é um tipo RECORD conhecido, o tipo não foi bem definido.
+                                    // O erro no tipo já foi dado por parseTipoEstendido na assinatura ou na declaração do tipo.
+                                    // Aqui, podemos apenas marcar como INVALID se quisermos ser mais explícitos ao tentar usar o tipo.
+                                    JanderSemanticoUtils.addSemanticError(paramToken, "Tipo registro '" + paramTypeNameIfRecord + "' para o parametro '"+ paramName + "' não foi corretamente definido ou encontrado.");
+                                    symbolTable.addSymbol(paramName, JanderType.INVALID);
+                                } else {
+                                    symbolTable.addRecordSymbol(paramName, fields);
+                                }
+                            } else { // Deveria ter um nome se é um tipo registro via tipo_estendido -> IDENT
+                                JanderSemanticoUtils.addSemanticError(paramToken, "Tipo de parametro registro anonimo nao suportado.");
+                                symbolTable.addSymbol(paramName, JanderType.INVALID);
+                            }
+                        } else if (paramFinalType != JanderType.INVALID) { // Tipos básicos ou alias válidos
+                            symbolTable.addSymbol(paramName, paramFinalType);
+                        } else {
+                            // Se o tipo do parâmetro já é inválido devido à análise do tipo_estendido,
+                            // podemos adicionar um símbolo inválido para evitar mais erros cascateados,
+                            // ou apenas não adicioná-lo. O erro do tipo já foi registrado.
+                            symbolTable.addSymbol(paramName, JanderType.INVALID);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Visita as declarações locais e comandos dentro do corpo da função
+        for (Declaracao_localContext localDeclCtx : globalCtx.declaracao_local()) {
+            visitDeclaracao_local(localDeclCtx);
+        }
+        for (CmdContext cmdCtx : globalCtx.cmd()) {
+            visit(cmdCtx); // Usa o visit genérico para despachar para o método visitCmd específico
+        }
+
+        // 7. Restaura o estado anterior de 'dentroDeFuncao' e fecha o escopo da função
+        this.dentroDeFuncao = oldDentroDeFuncao;
+        symbolTable.closeScope();
+        return null;
     }
 
     // Chamado ao visitar uma declaração local (variáveis ou constantes).
@@ -674,11 +838,35 @@ public class JanderSemantico extends JanderBaseVisitor<Void> {
         if (!dentroDeFuncao) {
             JanderSemanticoUtils.addSemanticError(
                 ctx.RETORNE().getSymbol(),
-                "comando retorne fora do escopo de função");
+                "comando retorne nao permitido nesse escopo");
+        } else {
+            // Se estiver dentro de uma função, precisamos do nome e do tipo de retorno da função atual.
+            // Isso requer que a informação da função atual seja rastreada.
+            // Por simplicidade, vamos assumir que podemos obter o nome da função atual de alguma forma,
+            // ou que a tabela de símbolos possa nos dar o tipo de retorno do escopo da função atual.
+            // Esta é uma simplificação e pode precisar de uma forma mais robusta de obter o tipo de retorno esperado.
+            
+            // Uma forma de fazer isso seria:
+            // 1. Em visitDeclaracao_global, quando uma FUNCAO é encontrada, armazenar seu nome e tipo de retorno em JanderSemantico.
+            // 2. Aqui, recuperar esse tipo de retorno esperado.
+            // Esta parte ainda precisa de mais detalhamento para buscar o tipo de retorno da função atual.
+            // Por ora, vamos apenas verificar o tipo da expressão do retorne.
+            if (ctx.expressao() != null) {
+                JanderType tipoRetornoExpressao = JanderSemanticoUtils.checkType(symbolTable, ctx.expressao());
+                // TODO: Obter o tipoDeRetornoEsperado da função atual.
+                // String nomeFuncaoAtual = symbolTable.getCurrentFunctionName(); // Necessitaria método na SymbolTable
+                // JanderType tipoDeRetornoEsperado = symbolTable.getReturnType(nomeFuncaoAtual);
+                // if (tipoDeRetornoEsperado != JanderType.INVALID && JanderSemanticoUtils.areTypesIncompatible(tipoDeRetornoEsperado, tipoRetornoExpressao)) {
+                // JanderSemanticoUtils.addSemanticError(ctx.expressao().start, "tipo de retorno incompativel com o tipo declarado para a funcao");
+                // }
+            } else {
+                // Comando 'retorne' sem expressão (válido para procedimentos, inválido para funções que esperam retorno)
+                // TODO: Verificar se a função atual é um procedimento (retorno INVALID) ou uma função que espera valor.
+            }
         }
-        return super.visitCmdRetorne(ctx);
+        return null;
     }
-    // Chamado ao visitar uma parcela não unária (ex: literal string ou &identificador).
+   // Chamado ao visitar uma parcela não unária (ex: literal string ou &identificador).
     @Override
     public Void visitParcela_nao_unario(Parcela_nao_unarioContext ctx) {
         // Se a parcela for um identificador (provavelmente para o operador de endereço '&'),

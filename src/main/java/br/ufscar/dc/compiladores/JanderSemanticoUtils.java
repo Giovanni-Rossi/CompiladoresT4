@@ -508,26 +508,43 @@ public class JanderSemanticoUtils {
             List<JanderParser.ExpressaoContext> args,
             SymbolTable symbolTable) {
 
-        // obtém a lista de tipos de parâmetros esperados (deve ter sido guardado na SymbolTable)
-        List<JanderType> expected = symbolTable.getParamTypes(funcName);
+        List<JanderType> expectedParamTypes = symbolTable.getParamTypes(funcName);
 
-        // 1) verificar número de argumentos
-        if (expected.size() != args.size()) {
+        if (expectedParamTypes.size() != args.size()) {
             addSemanticError(tCall,
-                String.format("Chamada %s: número de argumentos incompatível (esperado %d, encontrado %d)",
-                              funcName, expected.size(), args.size()));
+                String.format("incompatibilidade de parametros na chamada de %s", funcName));
+                // Para corresponder à saída: "Linha X: incompatibilidade de parametros na chamada de NOME_FUNCAO"
             return;
         }
 
-        // 2) verificar tipo de cada argumento
-        IntStream.range(0, expected.size()).forEach(i -> {
-            JanderType given = checkType(symbolTable, args.get(i));
-            JanderType want  = expected.get(i);
-            if (areTypesIncompatible(want, given)) {
-                addSemanticError(args.get(i).getStart(),
-                    String.format("Chamada %s: tipo do argumento %d incompatível (esperado %s, encontrado %s)",
-                                  funcName, i+1, want, given));
+        for (int i = 0; i < expectedParamTypes.size(); i++) {
+            JanderType givenType = checkType(symbolTable, args.get(i));
+            JanderType expectedType  = expectedParamTypes.get(i);
+
+            if (givenType == JanderType.INVALID) { // Erro já reportado dentro de checkType para a expressão do argumento
+                continue;
             }
-        });
+
+            // Para chamadas de função, a compatibilidade pode ser mais estrita.
+            // A mensagem de erro esperada é genérica "incompatibilidade de parametros...".
+            // Se o tipo esperado é REAL e o fornecido é INTEGER, isso é um erro para este caso de teste.
+            // Se o tipo esperado e o fornecido forem diferentes, e não for o caso de INTEGER para REAL (que tratamos como erro aqui),
+            // então também é um erro.
+            boolean typesAreCompatibleForCall = false;
+            if (expectedType == givenType) {
+                typesAreCompatibleForCall = true;
+            }
+            // Adicione aqui outras regras de promoção permitidas para parâmetros, se houver.
+            // Exemplo: se inteiro PUDESSE ser promovido para real em parâmetros:
+            // else if (expectedType == JanderType.REAL && givenType == JanderType.INTEGER) {
+            // typesAreCompatibleForCall = true;
+            // }
+
+            if (!typesAreCompatibleForCall) {
+                addSemanticError(args.get(i).getStart(), // O erro é no argumento específico
+                    String.format("incompatibilidade de parametros na chamada de %s", funcName));
+                // Não precisa dar return aqui, pode continuar verificando outros parâmetros.
+            }
+        }
     }
 }
