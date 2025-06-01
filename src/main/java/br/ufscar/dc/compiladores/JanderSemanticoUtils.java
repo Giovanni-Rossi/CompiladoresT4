@@ -44,10 +44,8 @@ public class JanderSemanticoUtils {
         if (targetType == JanderType.POINTER && sourceType == JanderType.POINTER) {
             return false; // Ponteiros são compatíveis entre si para atribuição direta (e.g., ptr1 <- ptr2)
         }
-        // Se um é ponteiro e o outro não, são incompatíveis (ex: inteiro <- ^inteiro é false aqui,
-        // mas a lógica de ^identificador deveria ter desreferenciado)
         if (targetType == JanderType.POINTER || sourceType == JanderType.POINTER) {
-            return true; // Se um é ponteiro e o outro não, são incompatíveis (ex: int <- ptr)
+            return true;
         }
 
         // Verifica a compatibilidade numérica (REAL e INTEGER).
@@ -67,7 +65,6 @@ public class JanderSemanticoUtils {
             return false;
         }
 
-        // Verifica a correspondência exata de tipos (se não caiu em nenhum dos casos acima).
         if (targetType == sourceType) {
             return false;
         }
@@ -118,26 +115,23 @@ public class JanderSemanticoUtils {
             // Regras para o operador '+'.
             if (operator.equals("+")) {
                 if (resultType == JanderType.LITERAL && currentTermType == JanderType.LITERAL) {
-                    resultType = JanderType.LITERAL; // literal + literal = literal.
+                    resultType = JanderType.LITERAL;
                 } else if ((resultType == JanderType.INTEGER || resultType == JanderType.REAL) &&
                         (currentTermType == JanderType.INTEGER || currentTermType == JanderType.REAL)) {
-                    resultType = getPromotedNumericType(resultType, currentTermType); // num + num = num promovido.
+                    resultType = getPromotedNumericType(resultType, currentTermType);
                 } else {
-                    // Outras combinações para '+' (ex: literal + inteiro) são inválidas.
-                    resultType = JanderType.INVALID; // Retorna INVALID, erro não adicionado aqui.
+                    resultType = JanderType.INVALID;
                 }
             }
             // Regras para o operador '-'.
             else if (operator.equals("-")) {
                 if ((resultType == JanderType.INTEGER || resultType == JanderType.REAL) &&
                     (currentTermType == JanderType.INTEGER || currentTermType == JanderType.REAL)) {
-                    resultType = getPromotedNumericType(resultType, currentTermType); // num - num = num promovido.
+                    resultType = getPromotedNumericType(resultType, currentTermType);
                 } else {
-                    // Outras combinações para '-' são inválidas.
-                    resultType = JanderType.INVALID; // Retorna INVALID, erro não adicionado aqui.
+                    resultType = JanderType.INVALID;
                 }
             } else {
-                // Operador aritmético desconhecido (não deve acontecer com uma gramática correta).
                 resultType = JanderType.INVALID;
             }
         }
@@ -156,14 +150,13 @@ public class JanderSemanticoUtils {
             if (resultType == null) {
                 resultType = currentFactorType; // O primeiro fator define o tipo inicial.
             } else {
-                 // Verifica incompatibilidade de tipo ou tipos não numéricos em multiplicação/divisão.
                  if (areTypesIncompatible(resultType, currentFactorType) || !( (resultType == JanderType.INTEGER || resultType == JanderType.REAL) && (currentFactorType == JanderType.INTEGER || currentFactorType == JanderType.REAL) )) {
                     addSemanticError(ctx.op2(ctx.fator().indexOf(factorCtx) -1).getStart(), "Termo " + ctx.getText() + " contém tipos incompatíveis");
                     return JanderType.INVALID;
                 }
-                resultType = getPromotedNumericType(resultType, currentFactorType); // Promove tipos numéricos.
+                resultType = getPromotedNumericType(resultType, currentFactorType);
             }
-            if (resultType == JanderType.INVALID) break; // Propaga o estado inválido.
+            if (resultType == JanderType.INVALID) break;
         }
         return resultType;
     }
@@ -180,13 +173,12 @@ public class JanderSemanticoUtils {
             if (resultType == null) {
                 resultType = currentParcelType; // A primeira parcela define o tipo inicial.
             } else {
-                // A operação de módulo requer que ambos os operandos sejam INTEGER.
                 if (areTypesIncompatible(resultType, currentParcelType) || !(resultType == JanderType.INTEGER && currentParcelType == JanderType.INTEGER) ) {
                     return JanderType.INVALID;
                 }
-                resultType = JanderType.INTEGER; // O resultado do módulo é INTEGER.
+                resultType = JanderType.INTEGER;
             }
-             if (resultType == JanderType.INVALID) break; // Propaga o estado inválido.
+            if (resultType == JanderType.INVALID) break;
         }
         return resultType;
     }
@@ -194,22 +186,19 @@ public class JanderSemanticoUtils {
     // Verifica o tipo de uma parcela (unária ou não unária).
     public static JanderType checkType(SymbolTable symbolTable, JanderParser.ParcelaContext ctx) {
         JanderType typeOfOperand = JanderType.INVALID;
-        // Determina o tipo a partir da parcela unária ou não unária.
         if (ctx.parcela_unario() != null) { 
             typeOfOperand = checkType(symbolTable, ctx.parcela_unario());
         } else if (ctx.parcela_nao_unario() != null) {
             typeOfOperand = checkType(symbolTable, ctx.parcela_nao_unario());
         }
 
-        // Trata o operador unário menos.
         if (ctx.op_unario() != null) {
             String op = ctx.op_unario().getText();
-            if (op.equals("-")) { // Menos unário.
-                // O operando deve ser INTEGER ou REAL.
+            if (op.equals("-")) {
                 if (typeOfOperand != JanderType.INTEGER && typeOfOperand != JanderType.REAL) {
                     return JanderType.INVALID;
                 }
-                return typeOfOperand; // O tipo do resultado é o mesmo do operando.
+                return typeOfOperand;
             }
         }
         return typeOfOperand;
@@ -217,18 +206,13 @@ public class JanderSemanticoUtils {
 
     // Verifica o tipo de uma parcela unária.
     public static JanderType checkType(SymbolTable symbolTable, JanderParser.Parcela_unarioContext ctx) {
-        // Regra da gramática: parcela_unario : '^'? identificador | ...
         if (ctx.identificador() != null) {
             IdentificadorContext identCtx = ctx.identificador();
-            // Verifica se há um operador de desreferência '^' antes do identificador
-            boolean isDereferenced = ctx.getChild(0) != null && ctx.getChild(0).getText().equals("^"); //
+            boolean isDereferenced = ctx.getChild(0) != null && ctx.getChild(0).getText().equals("^");
 
-            // Lógica para resolver o tipo do identificador (incluindo acesso a campos)
-            // Similar ao resolveIdentificadorType, mas adaptado para este contexto estático
-            // e sem o StringBuilder como parâmetro de saída explícito para o caminho completo.
-            List<org.antlr.v4.runtime.tree.TerminalNode> idParts = identCtx.IDENT(); //
+            List<org.antlr.v4.runtime.tree.TerminalNode> idParts = identCtx.IDENT();
             JanderType resolvedType = JanderType.INVALID;
-            String fullAccessPathForError = ""; // Para mensagens de erro
+            String fullAccessPathForError = "";
 
             if (idParts.isEmpty()) {
                 addSemanticError(identCtx.start, "Identificador inválido na expressão.");
@@ -280,17 +264,27 @@ public class JanderSemanticoUtils {
             
             // Lida com acesso a dimensões de array (identCtx.dimensao())
             if (resolvedType != JanderType.INVALID && identCtx.dimensao() != null && !identCtx.dimensao().exp_aritmetica().isEmpty()) { //
-                addSemanticError(identCtx.dimensao().start, "Acesso a dimensões de array (ex: var[indice]) em expressão não implementado.");
-                resolvedType = JanderType.INVALID;
+                if (resolvedType == JanderType.ARRAY) {
+                    // Valida que os índices são inteiros
+                    for (Exp_aritmeticaContext dimExpr : identCtx.dimensao().exp_aritmetica()) {
+                        JanderType indexType = checkType(symbolTable, dimExpr);
+                        if (indexType != JanderType.INTEGER) {
+                            addSemanticError(dimExpr.start, "Índice de array deve ser do tipo inteiro");
+                        }
+                    }
+                    // Retorna o tipo dos elementos do array
+                    resolvedType = symbolTable.getArrayElementType(baseVarName);
+                } else {
+                    addSemanticError(identCtx.dimensao().start, "Operador de indexação aplicado a uma variável que não é um array: " + baseVarName);
+                    resolvedType = JanderType.INVALID;
+                }
             }
 
             // Agora lida com o desreferenciamento (^)
             if (isDereferenced) {
                 if (resolvedType == JanderType.POINTER) { //
-                    String nameForPointedLookup = idParts.get(0).getText(); // Nome base do ponteiro
-                    if (idParts.size() > 1) { // Ponteiro é um campo de registro, ex: ^reg.ptr_field
-                        // A SymbolTable.getPointedType atual espera um nome simples.
-                        // Para desreferenciar um campo ponteiro, seria necessário mais informação ou uma SymbolTable mais complexa.
+                    String nameForPointedLookup = idParts.get(0).getText();
+                    if (idParts.size() > 1) {
                         addSemanticError(identCtx.start, "Desreferência de campo de registro que é ponteiro ('^') em expressão não é totalmente suportada nesta versão.");
                         return JanderType.INVALID;
                     }
@@ -298,15 +292,15 @@ public class JanderSemanticoUtils {
                     if (pointedType == JanderType.INVALID) {
                         addSemanticError(identCtx.start, "Ponteiro '" + fullAccessPathForError + "' não aponta para um tipo válido.");
                     }
-                    return pointedType; // Retorna o tipo para o qual o ponteiro aponta
-                } else if (resolvedType != JanderType.INVALID) { // Só adiciona erro se não houve erro anterior no resolvedType
-                    addSemanticError(identCtx.start, "Operador '^' aplicado a um não-ponteiro: " + fullAccessPathForError); //
+                    return pointedType;
+                } else if (resolvedType != JanderType.INVALID) {
+                    addSemanticError(identCtx.start, "Operador '^' aplicado a um não-ponteiro: " + fullAccessPathForError);
                     return JanderType.INVALID;
-                } else { // resolvedType já era INVALID
+                } else {
                     return JanderType.INVALID;
                 }
             }
-            return resolvedType; // Retorna o tipo do identificador (ou do campo)
+            return resolvedType;
 
         } else if (ctx.NUM_INT() != null) { //
             return JanderType.INTEGER;
@@ -321,63 +315,49 @@ public class JanderSemanticoUtils {
                 return JanderType.INVALID;
             }
             
-            // Verifica se é realmente uma função e obtém o tipo de retorno
-            JanderType returnType = symbolTable.getReturnType(funcName); //
-            // Se getReturnType retorna INVALID, mas o símbolo existe, pode não ser uma função ou ser um procedimento.
+            JanderType returnType = symbolTable.getReturnType(funcName);
             if (returnType == JanderType.INVALID && symbolTable.getSymbolType(funcName) != JanderType.INVALID) {
                 addSemanticError(funcToken, "Identificador '" + funcName + "' não é uma função válida ou não pode ser usado neste contexto de expressão.");
                 return JanderType.INVALID;
-            } else if (returnType == JanderType.INVALID) { // Símbolo não existe ou não tem tipo de retorno definido
-                // O erro de "não declarado" já teria sido pego acima se containsSymbol fosse falso.
-                // Este caso cobre situações onde o símbolo existe mas não é uma função com tipo de retorno.
+            } else if (returnType == JanderType.INVALID) {
                 addSemanticError(funcToken, "Função '" + funcName + "' não tem um tipo de retorno válido ou não está corretamente definida.");
                 return JanderType.INVALID;
             }
 
-            // Validação dos argumentos da chamada de função
-            validateCallArguments(funcToken, funcName, ctx.expressao(), symbolTable); // (adaptado de CmdChamada)
+            validateCallArguments(funcToken, funcName, ctx.expressao(), symbolTable);
             
-            return returnType; // Retorna o tipo de retorno da função
+            return returnType;
 
-        } else if (ctx.ABREPAR() != null && ctx.expressao() != null && !ctx.expressao().isEmpty()) { // Expressão entre parênteses: '(' expressao ')'
-            return checkType(symbolTable, ctx.expressao(0)); // (chamada recursiva)
+        } else if (ctx.ABREPAR() != null && ctx.expressao() != null && !ctx.expressao().isEmpty()) {
+            return checkType(symbolTable, ctx.expressao(0));
         }
-        return JanderType.INVALID; // Caso padrão, se nenhuma das regras acima corresponder
+        return JanderType.INVALID;
     }
 
     // Verifica o tipo de uma parcela não unária.
     public static JanderType checkType(SymbolTable symbolTable, JanderParser.Parcela_nao_unarioContext ctx) {
-        if (ctx.identificador() != null) { // Endereço de ponteiro (ex: &identificador).
+        if (ctx.identificador() != null) {
             String simpleName = ctx.identificador().IDENT(0).getText();
             Token idToken = ctx.identificador().getStart();
 
-            // Verifica se o identificador foi declarado.
             if (!symbolTable.containsSymbol(simpleName)) {
                 addSemanticError(idToken, "identificador " + simpleName + " nao declarado");
                 return JanderType.INVALID;
             }
-            // Quando usamos '&identificador', estamos obtendo o *endereço* de 'identificador'.
-            // O tipo de '&identificador' é sempre um ponteiro para o tipo de 'identificador'.
-            // Então, se 'identificador' é INTEIRO, '&identificador' é POINTER_TO_INTEGER.
-            // Como nossa enumeração JanderType só tem 'POINTER', representamos isso.
-            // Para verificação de compatibilidade, o tipo do lado direito será genericamente POINTER.
-            // A semântica de atribuição (`visitCmdAtribuicao`) precisará verificar se o tipo
-            // do ponteiro do lado esquerdo (`^T`) é compatível com o tipo do lado direito (`&T`).
-            return JanderType.POINTER; // Retorna que é um tipo POINTER
-        } else if (ctx.CADEIA() != null) { // Literal string.
+            return JanderType.POINTER;
+        } else if (ctx.CADEIA() != null) {
             return JanderType.LITERAL;
         }
-        return JanderType.INVALID; // Padrão para inválido.
+        return JanderType.INVALID;
     }
     
     // Verifica o tipo de um identificador pelo seu nome.
     public static JanderType checkTypeByName(SymbolTable symbolTable, Token nameToken, String name) {
-        // Verifica se o símbolo existe na tabela.
         if (!symbolTable.containsSymbol(name)) {
             addSemanticError(nameToken, "identificador " + name + " nao declarado");
             return JanderType.INVALID;
         }
-        return symbolTable.getSymbolType(name); // Recupera o tipo da tabela de símbolos.
+        return symbolTable.getSymbolType(name);
     }
 
     // Verifica o tipo de uma expressão geral (OU lógico).
@@ -392,13 +372,12 @@ public class JanderSemanticoUtils {
             if (resultType == null) {
                 resultType = currentTermLogType; // O primeiro termo define o tipo inicial.
             } else { 
-                // Ambos os operandos de OU devem ser LOGICAL.
                 if (resultType != JanderType.LOGICAL || currentTermLogType != JanderType.LOGICAL) {
-                    return JanderType.INVALID; // Incompatibilidade de tipo para 'ou'.
+                    return JanderType.INVALID;
                 }
-                resultType = JanderType.LOGICAL; // O resultado de 'ou' é LOGICAL.
+                resultType = JanderType.LOGICAL;
             }
-            if (resultType == JanderType.INVALID) break; // Propaga o estado inválido.
+            if (resultType == JanderType.INVALID) break;
         }
         return resultType;
     }
@@ -413,93 +392,79 @@ public class JanderSemanticoUtils {
         for (Fator_logicoContext factorLogCtx : ctx.fator_logico()) {
             JanderType currentFactorLogType = checkType(symbolTable, factorLogCtx);
             if (resultType == null) {
-                resultType = currentFactorLogType; // O primeiro fator define o tipo inicial.
+                resultType = currentFactorLogType;
             } else { 
-                // Ambos os operandos de E devem ser LOGICAL.
                 if (resultType != JanderType.LOGICAL || currentFactorLogType != JanderType.LOGICAL) {
-                    return JanderType.INVALID; // Incompatibilidade de tipo para 'e'.
+                    return JanderType.INVALID;
                 }
-                resultType = JanderType.LOGICAL; // O resultado de 'e' é LOGICAL.
+                resultType = JanderType.LOGICAL;
             }
-            if (resultType == JanderType.INVALID) break; // Propaga o estado inválido.
+            if (resultType == JanderType.INVALID) break;
         }
         return resultType;
     }
 
     // Verifica o tipo de um fator lógico (operador NÃO).
     public static JanderType checkType(SymbolTable symbolTable, JanderParser.Fator_logicoContext ctx) {
-        JanderType type = checkType(symbolTable, ctx.parcela_logica()); // Tipo da parcela lógica.
+        JanderType type = checkType(symbolTable, ctx.parcela_logica());
         
-        // Verifica o operador 'nao' (NÃO).
         boolean hasNao = ctx.getChildCount() > 1 && ctx.getChild(0).getText().equals("nao"); 
 
-        if (hasNao) { // Se o operador 'nao' estiver presente.
-            // O operando de 'nao' deve ser LOGICAL.
+        if (hasNao) {
             if (type != JanderType.LOGICAL) {
-                return JanderType.INVALID; // Incompatibilidade de tipo para 'nao'.
+                return JanderType.INVALID;
             }
-            return JanderType.LOGICAL; // O resultado de 'nao' é LOGICAL.
+            return JanderType.LOGICAL;
         }
-        return type; // Se não houver 'nao', o tipo é o da parcela.
+        return type;
     }
 
     // Verifica o tipo de uma parcela lógica.
     public static JanderType checkType(SymbolTable symbolTable, JanderParser.Parcela_logicaContext ctx) {
-        if (ctx.exp_relacional() != null) { // Expressão relacional.
+        if (ctx.exp_relacional() != null) {
             return checkType(symbolTable, ctx.exp_relacional()); 
-        } else if (ctx.VERDADEIRO() != null || ctx.FALSO() != null) { // Literais booleanos.
+        } else if (ctx.VERDADEIRO() != null || ctx.FALSO() != null) {
             return JanderType.LOGICAL;
         }
-        return JanderType.INVALID; // Padrão para inválido.
+        return JanderType.INVALID;
     }
 
     // Verifica o tipo de uma expressão relacional.
     public static JanderType checkType(SymbolTable symbolTable, JanderParser.Exp_relacionalContext ctx) {
         // Caso 1: Uma expressão relacional que é apenas uma expressão aritmética (não uma comparação).
         if (ctx.exp_aritmetica().size() == 1 && ctx.op_relacional() == null) {
-            return checkType(symbolTable, ctx.exp_aritmetica(0)); // Retorna o tipo da expressão aritmética.
+            return checkType(symbolTable, ctx.exp_aritmetica(0));
         } 
         // Caso 2: Uma operação relacional (ex: a > b).
         else if (ctx.exp_aritmetica().size() == 2 && ctx.op_relacional() != null) {
             JanderType typeLeft = checkType(symbolTable, ctx.exp_aritmetica(0));
             JanderType typeRight = checkType(symbolTable, ctx.exp_aritmetica(1));
 
-            // Se qualquer um dos lados já for inválido, propaga o erro.
             if (typeLeft == JanderType.INVALID || typeRight == JanderType.INVALID) {
-                // Um erro já deve ter sido adicionado ou será tratado por uma regra de nível superior.
                 return JanderType.INVALID; 
             }
 
             boolean errorInRelationalOp = false;
-            // Verifica incompatibilidades de tipo em operações relacionais.
-            // Não é possível comparar tipos LOGICAL com operadores relacionais.
             if (typeLeft == JanderType.LOGICAL || typeRight == JanderType.LOGICAL) {
                 errorInRelationalOp = true;
             } 
-            // Se um lado for LITERAL, o outro também deve ser LITERAL para comparação.
             else if (typeLeft == JanderType.LITERAL && typeRight != JanderType.LITERAL) {
                 errorInRelationalOp = true;
             } else if (typeRight == JanderType.LITERAL && typeLeft != JanderType.LITERAL) {
                 errorInRelationalOp = true;
             } 
-            // Se não forem ambos numéricos e não forem ambos literais, é um erro.
-            // Isso cobre casos como comparar um número com um tipo personalizado não compatível (se algum fosse adicionado).
             else if (!((typeLeft == JanderType.INTEGER || typeLeft == JanderType.REAL) &&
-                        (typeRight == JanderType.INTEGER || typeRight == JanderType.REAL)) && // Se não forem ambos numéricos
-                    !(typeLeft == JanderType.LITERAL && typeRight == JanderType.LITERAL) ) { // E não forem ambos literais
+                        (typeRight == JanderType.INTEGER || typeRight == JanderType.REAL)) &&
+                    !(typeLeft == JanderType.LITERAL && typeRight == JanderType.LITERAL) ) {
                  errorInRelationalOp = true;
             }
             
 
             if (errorInRelationalOp) {
-                 // Retorna INVALID se um erro específico da operação relacional foi encontrado.
-                 // A mensagem de erro real para tipos incompatíveis em op relacional pode ser adicionada aqui ou na atribuição.
                 return JanderType.INVALID; 
             }
-            // Operações relacionais bem-sucedidas resultam em um tipo LOGICAL.
             return JanderType.LOGICAL; 
         }
-        // Padrão para inválido se a estrutura não corresponder aos padrões conhecidos.
         return JanderType.INVALID;
     }
 
@@ -513,7 +478,6 @@ public class JanderSemanticoUtils {
         if (expectedParamTypes.size() != args.size()) {
             addSemanticError(tCall,
                 String.format("incompatibilidade de parametros na chamada de %s", funcName));
-                // Para corresponder à saída: "Linha X: incompatibilidade de parametros na chamada de NOME_FUNCAO"
             return;
         }
 
@@ -521,29 +485,14 @@ public class JanderSemanticoUtils {
             JanderType givenType = checkType(symbolTable, args.get(i));
             JanderType expectedType  = expectedParamTypes.get(i);
 
-            if (givenType == JanderType.INVALID) { // Erro já reportado dentro de checkType para a expressão do argumento
+            if (givenType == JanderType.INVALID) {
                 continue;
             }
 
-            // Para chamadas de função, a compatibilidade pode ser mais estrita.
-            // A mensagem de erro esperada é genérica "incompatibilidade de parametros...".
-            // Se o tipo esperado é REAL e o fornecido é INTEGER, isso é um erro para este caso de teste.
-            // Se o tipo esperado e o fornecido forem diferentes, e não for o caso de INTEGER para REAL (que tratamos como erro aqui),
-            // então também é um erro.
-            boolean typesAreCompatibleForCall = false;
-            if (expectedType == givenType) {
-                typesAreCompatibleForCall = true;
-            }
-            // Adicione aqui outras regras de promoção permitidas para parâmetros, se houver.
-            // Exemplo: se inteiro PUDESSE ser promovido para real em parâmetros:
-            // else if (expectedType == JanderType.REAL && givenType == JanderType.INTEGER) {
-            // typesAreCompatibleForCall = true;
-            // }
-
-            if (!typesAreCompatibleForCall) {
-                addSemanticError(args.get(i).getStart(), // O erro é no argumento específico
+            // Strict type checking - no automatic promotion
+            if (expectedType != givenType) {
+                addSemanticError(args.get(i).getStart(),
                     String.format("incompatibilidade de parametros na chamada de %s", funcName));
-                // Não precisa dar return aqui, pode continuar verificando outros parâmetros.
             }
         }
     }
